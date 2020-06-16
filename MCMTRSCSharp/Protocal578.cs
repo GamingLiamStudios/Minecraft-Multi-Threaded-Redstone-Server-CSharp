@@ -1,8 +1,13 @@
 ﻿using System;
 using System.IO;
 using System.Net;
+using System.Net.Http;
+using System.Net.Http.Json;
 using System.Net.Sockets;
+using System.Numerics;
 using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Toolbox;
@@ -28,12 +33,12 @@ namespace MCMTRS.Protocal578 {
             byte read;
             do {
                 read = stream.ReadByte();
-                int value = (read & 0b01111111);
+                int value = (read & 0x7f);
                 result |= (value << (7 * numRead));
                 numRead++;
                 if(numRead > 5)
                     throw new TypeLoadException("VarInt is too big");
-            } while((read & 0b10000000) != 0);
+            } while((read & 0x80) != 0);
 
             return result;
         }
@@ -43,12 +48,12 @@ namespace MCMTRS.Protocal578 {
             byte read;
             do {
                 read = stream.ReadByte();
-                int value = (read & 0b01111111);
+                int value = (read & 0x7f);
                 result |= value << (7 * numRead);
                 numRead++;
                 if(numRead > 10)
                     throw new TypeLoadException("VarLong is too big");
-            } while((read & 0b10000000) != 0);
+            } while((read & 0x80) != 0);
 
             return result;
         }
@@ -127,36 +132,59 @@ namespace MCMTRS.Protocal578 {
             length = VariableNumbers.ReadVarInt(stream, out int _);
             pktID = VariableNumbers.ReadVarInt(stream, out int pktIDLen);
             data = stream.ReadBytes(length - pktIDLen);
+            Console.WriteLine("\n"+length + " " + (length - pktIDLen));
+            Console.WriteLine(new BigInteger(data).ToString("x"));
+        }
+        public UCPacket(int _pktID, byte[] _data) {
+            data = _data;
+            pktID = _pktID;
+            length = 0;
+        }
+        public byte[] WritePacket() {
+            var stream = new MemoryStream();
+            byte[] id = VariableNumbers.CreateVarInt(pktID);
+            stream.Write(id);
+            stream.Write(data);
+            byte[] pktData = stream.ToArray();
+            stream.SetLength(0);
+            stream.Write(VariableNumbers.CreateVarInt(pktData.Length));
+            stream.Write(pktData);
+            return stream.ToArray();
         }
     }
 
     enum State {
         Handshaking = 0,
         Status = 1,
-        Login = 2
+        Login = 2,
+        Play = 3
     }
 
     #endregion
 
     class Client {
-
-        protected string username;
+        protected string username, uuid, json;
         protected bool compression, connected;
         protected State currentState;
-        protected IAsyncResult read;
+        protected RSA.KeyPair key;
+        protected AesManaged aes;
+        protected ICryptoTransform enc, dec;
+        protected byte[] verify, publicKey;
 
         public Client(TcpClient user) {
             if(user == null)
                 return;
             NetworkStream net = user.GetStream();
+            var rsa = new RSA();
+            key = rsa.GenerateKeyPair();
+            rsa.Dispose();
             compression = false;
             connected = true;
             currentState = State.Handshaking;
-            BeginConnection(net);
             while(connected) {
-                if(read.IsCompleted && net.DataAvailable)
-                    read = net.BeginRead(new byte[0], 0, 0, HandlePacket, net);
-                //Handle Client On clock
+                while(!net.DataAvailable)
+                    ;
+                HandlePacket(net);
             }
             net.Close();
             net.Dispose();
@@ -164,16 +192,95 @@ namespace MCMTRS.Protocal578 {
             user.Dispose();
         }
 
-        public void BeginConnection(NetworkStream net) {
-            
+        public void HandlePacket(NetworkStream net) {
+            BinaryReader reader = new BinaryReader(net);
+            BinaryWriter writer = new BinaryWriter(net);
+            UCPacket packet = new UCPacket(reader);
+            BinaryReader packetReader = new BinaryReader(new MemoryStream(packet.data));
+            switch(currentState) {
+                case State.Handshaking:
+                    switch(packet.pktID) {
+                        case 0x00:
+                            if(VariableNumbers.ReadVarInt(packetReader, out int _) != 578)
+                                ;//TODO: Wrong Version Error Message at Client
+                            packetReader.ReadBytes(VariableNumbers.ReadVarInt(packetReader, out int __)); //Unused
+                            packetReader.ReadBytes(2); //Unused
+                            currentState = (State)VariableNumbers.ReadVarInt(packetReader, out __);
+                            break;
+                        case 0xFE:
+                            //TODO: Implement Server List Ping
+                            break;
+                    }
+                    break;
+                case State.Login:
+                    switch(packet.pktID) {
+                        case 0x00:
+                            username = Encoding.UTF8.GetString(packetReader.ReadBytes(VariableNumbers.ReadVarInt(packetReader, out int _)));
+                            MemoryStream stream = new MemoryStream();
+                            stream.Write(new byte[20]);
+                            publicKey = PublicKeyToDER(key);
+                            Console.WriteLine(publicKey.Length);
+                            stream.Write(VariableNumbers.CreateVarInt(publicKey.Length));
+                            stream.Write(publicKey);
+                            stream.Write(VariableNumbers.CreateVarInt(4));
+                            verify = new byte[4];
+                            new Random().NextBytes(verify);
+                            Console.WriteLine(verify.Length);
+                            stream.Write(verify);
+                            packet = new UCPacket(0x01, stream.ToArray());
+                            net.Write(packet.WritePacket());
+                            break;
+                        case 0x01:
+                            var secret = RSA.DecryptPadded(packetReader.ReadBytes(VariableNumbers.ReadVarInt(packetReader, out _)), key);
+                            if(!RSA.DecryptPadded(packetReader.ReadBytes(VariableNumbers.ReadVarInt(packetReader, out _)), key).Equals(verify)) {
+                                //TODO: Client Message 'Login Failed'
+                                Console.Error.WriteLine("Login Verification Failed!");
+                                net.Close();
+                                break;
+                            }
+                            stream = new MemoryStream();
+                            stream.Write(new byte[20]);
+                            stream.Write(secret);
+                            stream.Write(publicKey);
+                            var hash = MinecraftShaDigest(new SHA1Managed().ComputeHash(stream));
+                            var get = new HttpClient().GetStringAsync(
+                                string.Format("https://sessionserver.mojang.com/session/minecraft/hasJoined?username={0}&serverId={1}", username, hash));
+                            get.Wait();
+                            json = get.Result;
+                            aes = new AesManaged();
+                            aes.Key = aes.IV = secret;
+                            enc = aes.CreateEncryptor();
+                            dec = aes.CreateDecryptor();
+                            stream.SetLength(0);
+                            var tmp = json.Substring(json.IndexOf("\"id\": ") + 1);
+                            tmp = tmp.Substring(0, tmp.IndexOf('"') - 1);
+                            uuid = tmp.Insert(8, "-").Insert(13, "-").Insert(18, "-").Insert(23, "-");
+                            byte[] txt = Encoding.UTF8.GetBytes(uuid);
+                            VariableNumbers.WriteVarInt(writer, txt.Length);
+                            stream.Write(txt);
+                            txt = Encoding.UTF8.GetBytes(username);
+                            VariableNumbers.WriteVarInt(writer, txt.Length);
+                            stream.Write(txt);
+                            packet = new UCPacket(0x02, stream.ToArray());
+                            net.Write(Encrypt(packet.WritePacket()));
+                            currentState = State.Play;
+                            Console.WriteLine("Player {0} has Joined.", username);
+                            break;
+                    }
+                    break;
+            }
         }
 
-        public void HandlePacket(object state) {
-            NetworkStream net = (NetworkStream)state;
-            net.EndRead(read);
-            switch(state) {
-                
+        public byte[] Encrypt(byte[] data) {
+            byte[] encrypted;
+            MemoryStream stream = new MemoryStream();
+            using(CryptoStream cs = new CryptoStream(stream, enc, CryptoStreamMode.Write)) {
+                using(BinaryWriter sw = new BinaryWriter(cs))
+                    sw.Write(data);
+                encrypted = stream.ToArray();
             }
+            stream.Dispose();
+            return encrypted;
         }
 
         public byte[] PublicKeyToDER(RSA.KeyPair key) {
@@ -193,6 +300,15 @@ namespace MCMTRS.Protocal578 {
             stream.SetLength(0);
             WriteByteArray(ref stream, 0x30, publicKeyData);
             return stream.ToArray();
+        }
+
+        public static string MinecraftShaDigest(byte[] hash) {
+            Array.Reverse(hash);
+            BigInteger b = new BigInteger(hash);
+            if(b < 0)
+                return "-" + (-b).ToString("x").TrimStart('0');
+            else
+                return b.ToString("x").TrimStart('0');
         }
 
         public void WriteByteArray(ref MemoryStream stream, byte identifier, byte[] data) {

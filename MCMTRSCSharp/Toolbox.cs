@@ -162,7 +162,7 @@ namespace Toolbox {
                 public BigInteger e;
                 public BigInteger d;
             }
-            RNGCryptoServiceProvider rNG;
+            static RNGCryptoServiceProvider rNG;
 
             public RSA() {
                 rNG = new RNGCryptoServiceProvider();
@@ -177,24 +177,15 @@ namespace Toolbox {
                 s.Start();
                 KeyPair key = new KeyPair();
                 BigInteger p, q;
-                key.d = p = q = BigInteger.Zero;
-                int k = key.n.ToByteArray().Length;
-                while(BigInteger.Pow(new BigInteger(256), k - 1) <= key.n & key.n < BigInteger.Pow(new BigInteger(256), k)) {
-                    p = CreateCryptoBigInteger(512);
-                    while(!p.IsProbablyPrime())
-                        p = CreateCryptoBigInteger(512);
-                    q = CreateCryptoBigInteger(512);
-                    while(!q.IsProbablyPrime())
-                        q = CreateCryptoBigInteger(512);
-                    key.n = p * q;
-                    k = key.n.ToByteArray().Length;
-                }
-                key.e = 65537;
-                key.d = BigInteger.ModPow(key.e, -1, LCM(p - 1, q - 1));
+                p = CreateCryptoBigInteger(512);
+                q = CreateCryptoBigInteger(512);
+                key.n = p * q;
+                key.e = new BigInteger(65537);
+                key.d = BigInteger.Remainder(BigInteger.Divide(BigInteger.One, key.e), LCM(p - 1, q - 1));
                 return key;
             }
 
-            public byte[] DecryptPadded(byte[] paddedData, KeyPair key) {
+            public static byte[] DecryptPadded(byte[] paddedData, KeyPair key) {
                 var stream = new MemoryStream(BigInteger.ModPow(new BigInteger(paddedData), key.d, key.n).ToByteArray());
                 stream.Read(new byte[2], 0, 2);
                 int r = key.n.ToByteArray().Length - 3 - 16;
@@ -218,10 +209,13 @@ namespace Toolbox {
                 return x;
             }
 
-            BigInteger CreateCryptoBigInteger(int bits) {
+            public static BigInteger CreateCryptoBigInteger(int bits) {
                 byte[] bytes = new byte[bits / 8];
                 rNG.GetBytes(bytes);
-                return new BigInteger(bytes);
+                BigInteger num = new BigInteger(bytes);
+                if(num < 0)
+                    num *= -1;
+                return num;
             }
         }
 
