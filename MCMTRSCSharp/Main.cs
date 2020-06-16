@@ -1,12 +1,9 @@
-﻿using System;
-using System.Net;
+﻿using System.Net;
 using System.Net.Sockets;
 using System.Threading.Tasks;
+using MCMTRS.Protocal578;
 
-namespace MCS578 {
-
-    
-
+namespace MCMTRS {
     class Listener {
         TcpListener listner;
         int port;
@@ -33,6 +30,4 @@ namespace MCS578 {
             listner.Stop();
         }
     }
-
-    
 }

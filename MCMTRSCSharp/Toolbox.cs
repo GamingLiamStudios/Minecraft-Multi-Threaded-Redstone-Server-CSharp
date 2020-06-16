@@ -12,7 +12,7 @@ using System.Diagnostics;
 namespace Toolbox {
     class ByteTools {
         public static string BytesToString(byte[] vs, ref int index, int length) {
-            string text = Encoding.ASCII.GetString(vs,index,length);
+            string text = Encoding.ASCII.GetString(vs, index, length);
             index += length;
             //Console.WriteLine("index " + index + ": " + text);
             return text;
@@ -35,7 +35,7 @@ namespace Toolbox {
         }
         public static byte[] UShortToBytes(ushort data, bool isBigEndian = false) {
             byte[] vs = new byte[2];
-            vs[0] = (byte)((data&0xFF00) >> 8);
+            vs[0] = (byte)((data & 0xFF00) >> 8);
             vs[1] = (byte)(data & 0x00FF);
             if(!isBigEndian)
                 Array.Reverse(vs);
@@ -147,7 +147,7 @@ namespace Toolbox {
             if(index + length > bitArray.Length)
                 throw new IndexOutOfRangeException();
             int value = 0;
-            for(int i = index; i < index+length; i++)
+            for(int i = index; i < index + length; i++)
                 if(bitArray[i])
                     value += Convert.ToInt16(Math.Pow(2, i));
             index += length;
