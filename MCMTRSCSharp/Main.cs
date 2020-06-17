@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Pipes;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -8,17 +10,19 @@ using System.Threading.Tasks;
 using MCMTRS.Protocal578;
 
 namespace MCMTRS {
-    class Listener {
+    class Server {
         TcpListener listner;
-        int port;
+        int port, maxPlayers;
         bool running;
+        List<Task<Client>> clients;
 
         static void Main(string[] args) {
-            new Listener(args);
+            new Server(args);
         }
 
-        public Listener(string[] args) {
+        public Server(string[] args) {
             ConsoleErrorWriterDecorator.SetToConsole();
+            maxPlayers = 10;
             port = 25565;
             running = true;
             for(int i = 0; i < args.Length; i++)
@@ -26,13 +30,25 @@ namespace MCMTRS {
                     case "-port":
                         port = int.Parse(args[i++]);
                         break;
+                    case "-maxplayers":
+                        maxPlayers = int.Parse(args[i++]);
+                        break;
                 }
+            clients = new List<Task<Client>>();
             listner = new TcpListener(IPAddress.Any, port);
             Console.WriteLine("Server Starting");
             listner.Start();
-            while(running)
-                if(listner.Pending())
-                    new Task(() => new Client(listner.AcceptTcpClient())).Start();
+            while(running) {
+                if(listner.Pending()) {
+                    if(clients.Count < maxPlayers) {
+                        Task<Client> client = new Task<Client>(() => new Client(listner.AcceptTcpClient()));
+                        client.Start();
+                        clients.Add(client);
+                    }
+                }
+                clients.RemoveAll(x => x.IsCompleted);
+            }
+            clients.ForEach(x => x.Result.Close());
             listner.Stop();
         }
     }

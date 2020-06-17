@@ -181,8 +181,8 @@ namespace MCMTRS.Protocal578 {
             compression = false;
             connected = true;
             currentState = State.Handshaking;
-            while(connected) {
-                while(!net.DataAvailable)
+            while(connected && user.Connected) {
+                while(!net.DataAvailable && user.Connected)
                     ;
                 HandlePacket(net);
             }
@@ -190,6 +190,11 @@ namespace MCMTRS.Protocal578 {
             net.Dispose();
             user.Close();
             user.Dispose();
+            Console.WriteLine("Connection with {0} has been lost", username);
+        }
+
+        public void Close() {
+            connected = false;
         }
 
         public void HandlePacket(NetworkStream net) {
@@ -217,9 +222,10 @@ namespace MCMTRS.Protocal578 {
                         case 0x00:
                             username = Encoding.UTF8.GetString(packetReader.ReadBytes(VariableNumbers.ReadVarInt(packetReader, out int _)));
                             MemoryStream stream = new MemoryStream();
+                            stream.Write(VariableNumbers.CreateVarInt(20));
                             stream.Write(new byte[20]);
                             publicKey = PublicKeyToDER(key);
-                            Console.WriteLine(publicKey.Length);
+                            Console.WriteLine(new BigInteger(publicKey).ToString("x").TrimStart('0'));
                             stream.Write(VariableNumbers.CreateVarInt(publicKey.Length));
                             stream.Write(publicKey);
                             stream.Write(VariableNumbers.CreateVarInt(4));
@@ -229,8 +235,10 @@ namespace MCMTRS.Protocal578 {
                             stream.Write(verify);
                             packet = new UCPacket(0x01, stream.ToArray());
                             net.Write(packet.WritePacket());
+                            Console.WriteLine("And It nulls here");
                             break;
                         case 0x01:
+                            Console.WriteLine("Ooh, A Response");
                             var secret = RSA.DecryptPadded(packetReader.ReadBytes(VariableNumbers.ReadVarInt(packetReader, out _)), key);
                             if(!RSA.DecryptPadded(packetReader.ReadBytes(VariableNumbers.ReadVarInt(packetReader, out _)), key).Equals(verify)) {
                                 //TODO: Client Message 'Login Failed'
@@ -282,7 +290,7 @@ namespace MCMTRS.Protocal578 {
             stream.Dispose();
             return encrypted;
         }
-
+        
         public byte[] PublicKeyToDER(RSA.KeyPair key) {
             byte[] modulusData = key.n.ToByteArray();
             byte[] exponentData = key.e.ToByteArray();
@@ -300,6 +308,24 @@ namespace MCMTRS.Protocal578 {
             stream.SetLength(0);
             WriteByteArray(ref stream, 0x30, publicKeyData);
             return stream.ToArray();
+        }
+
+        //public byte[] PublicKeyToDER(RSA.KeyPair key) {
+        //    byte[] modulusData = key.n.ToByteArray();
+        //    byte[] exponentData = key.e.ToByteArray();
+        //    var stream = new MemoryStream();
+        //    WriteByteArray(ref stream, 0x02, modulusData);
+        //    WriteByteArray(ref stream, 0x02, exponentData);
+        //    byte[] publicKeyData = stream.ToArray();
+        //    stream.SetLength(0);
+        //    WriteByteArray(ref stream, 0x30, publicKeyData);
+        //    return stream.ToArray();
+        //}
+
+        public byte[] DERToPEM(byte[] DER) {
+            string conv = Convert.ToBase64String(DER);
+            conv += "\n-----END RSA PUBLIC KEY-----";
+            return Encoding.UTF8.GetBytes("-----BEGIN RSA PUBLIC KEY-----\n" + conv);
         }
 
         public static string MinecraftShaDigest(byte[] hash) {
