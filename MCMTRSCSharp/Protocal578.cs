@@ -166,8 +166,8 @@ namespace MCMTRS.Protocal578 {
         protected string username, uuid, json;
         protected bool compression, connected;
         protected State currentState;
-        protected RSA.KeyPair key;
-        protected AesManaged aes;
+        protected RSACryptoServiceProvider rsa; //TODO: Replace with Custom Lib
+        protected AesManaged aes; //TODO: Replace with Custom Lib
         protected ICryptoTransform enc, dec;
         protected byte[] verify, publicKey;
 
@@ -175,9 +175,7 @@ namespace MCMTRS.Protocal578 {
             if(user == null)
                 return;
             NetworkStream net = user.GetStream();
-            var rsa = new RSA();
-            key = rsa.GenerateKeyPair();
-            rsa.Dispose();
+            rsa = new RSACryptoServiceProvider(1024);
             compression = false;
             connected = true;
             currentState = State.Handshaking;
@@ -186,6 +184,7 @@ namespace MCMTRS.Protocal578 {
                     ;
                 HandlePacket(net);
             }
+            rsa.Dispose();
             net.Close();
             net.Dispose();
             user.Close();
@@ -224,7 +223,7 @@ namespace MCMTRS.Protocal578 {
                             MemoryStream stream = new MemoryStream();
                             stream.Write(VariableNumbers.CreateVarInt(20));
                             stream.Write(new byte[20]);
-                            publicKey = PublicKeyToDER(key);
+                            publicKey = rsa.ExportSubjectPublicKeyInfo();
                             Console.WriteLine(new BigInteger(publicKey).ToString("x").TrimStart('0'));
                             stream.Write(VariableNumbers.CreateVarInt(publicKey.Length));
                             stream.Write(publicKey);
@@ -235,33 +234,36 @@ namespace MCMTRS.Protocal578 {
                             stream.Write(verify);
                             packet = new UCPacket(0x01, stream.ToArray());
                             net.Write(packet.WritePacket());
-                            Console.WriteLine("And It nulls here");
                             break;
                         case 0x01:
-                            Console.WriteLine("Ooh, A Response");
-                            var secret = RSA.DecryptPadded(packetReader.ReadBytes(VariableNumbers.ReadVarInt(packetReader, out _)), key);
-                            if(!RSA.DecryptPadded(packetReader.ReadBytes(VariableNumbers.ReadVarInt(packetReader, out _)), key).Equals(verify)) {
+                            var secret = rsa.Decrypt(packetReader.ReadBytes(VariableNumbers.ReadVarInt(packetReader, out _)), RSAEncryptionPadding.Pkcs1);
+                            byte[] clientVerify = rsa.Decrypt(packetReader.ReadBytes(VariableNumbers.ReadVarInt(packetReader, out _)), RSAEncryptionPadding.Pkcs1);
+                            if(!ArraysEqual(clientVerify, verify)) {
                                 //TODO: Client Message 'Login Failed'
                                 Console.Error.WriteLine("Login Verification Failed!");
                                 net.Close();
                                 break;
                             }
                             stream = new MemoryStream();
-                            stream.Write(new byte[20]);
+                            stream.Write(Encoding.ASCII.GetBytes(Encoding.UTF8.GetString(new byte[20])));
                             stream.Write(secret);
                             stream.Write(publicKey);
-                            var hash = MinecraftShaDigest(new SHA1Managed().ComputeHash(stream));
-                            var get = new HttpClient().GetStringAsync(
-                                string.Format("https://sessionserver.mojang.com/session/minecraft/hasJoined?username={0}&serverId={1}", username, hash));
-                            get.Wait();
-                            json = get.Result;
+                            var hash = MinecraftShaDigest(new SHA1Managed().ComputeHash(stream.ToArray()));
+                            Console.WriteLine("Checking Authorization");
+                            string URL = string.Format("https://sessionserver.mojang.com/session/minecraft/hasJoined?username={0}&serverId={1}&ip=ip", username, hash);
+                            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(URL);
+                            request.ContentType = "application/json";
+                            HttpWebResponse response = request.GetResponse() as HttpWebResponse;
+                            using(Stream responseStream = response.GetResponseStream()) {
+                                StreamReader sr = new StreamReader(responseStream, Encoding.UTF8);
+                                json = sr.ReadToEnd();
+                            }
                             aes = new AesManaged();
                             aes.Key = aes.IV = secret;
                             enc = aes.CreateEncryptor();
                             dec = aes.CreateDecryptor();
                             stream.SetLength(0);
-                            var tmp = json.Substring(json.IndexOf("\"id\": ") + 1);
-                            tmp = tmp.Substring(0, tmp.IndexOf('"') - 1);
+                            var tmp = json.Split("\"")[3]; //TODO: Implement Proper JSON Parsing
                             uuid = tmp.Insert(8, "-").Insert(13, "-").Insert(18, "-").Insert(23, "-");
                             byte[] txt = Encoding.UTF8.GetBytes(uuid);
                             VariableNumbers.WriteVarInt(writer, txt.Length);
@@ -277,6 +279,15 @@ namespace MCMTRS.Protocal578 {
                     }
                     break;
             }
+        }
+
+        public bool ArraysEqual(byte[] a, byte[] b) {
+            if(a.Length != b.Length)
+                return false;
+            for(int i = 0; i < a.Length; i++)
+                if(a[i] != b[i])
+                    return false;
+            return true;
         }
 
         public byte[] Encrypt(byte[] data) {
