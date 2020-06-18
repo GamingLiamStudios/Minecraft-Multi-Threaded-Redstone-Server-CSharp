@@ -6,15 +6,31 @@ using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using MCMTRS.Protocal578;
 
 namespace MCMTRS {
+    sealed class Pool {
+        private static readonly Lazy<Pool> lazy = new Lazy<Pool>(() => new Pool());
+
+        public List<Client> clients = new List<Client>();
+        public int port = 25565, maxPlayers = 10, clientsOnline = 0, connected = 0;
+        public bool OnlineMode = true;
+
+        public static Pool Instance {
+            get {
+                return lazy.Value;
+            }
+        }
+
+        private Pool() {
+        }
+    }
+
     class Server {
-        TcpListener listner;
-        int port, maxPlayers;
+        TcpListener listener;
         bool running;
-        List<Task<Client>> clients;
 
         static void Main(string[] args) {
             new Server(args);
@@ -22,34 +38,39 @@ namespace MCMTRS {
 
         public Server(string[] args) {
             ConsoleErrorWriterDecorator.SetToConsole();
-            maxPlayers = 10;
-            port = 25565;
             running = true;
             for(int i = 0; i < args.Length; i++)
                 switch(args[i]) {
                     case "-port":
-                        port = int.Parse(args[i++]);
+                        Pool.Instance.port = int.Parse(args[i++]);
                         break;
                     case "-maxplayers":
-                        maxPlayers = int.Parse(args[i++]);
+                        Pool.Instance.maxPlayers = int.Parse(args[i++]);
+                        break;
+                    case "-offlinemode":
+                        Pool.Instance.OnlineMode = false;
                         break;
                 }
-            clients = new List<Task<Client>>();
-            listner = new TcpListener(IPAddress.Any, port);
-            Console.WriteLine("Server Starting");
-            listner.Start();
+            listener = new TcpListener(IPAddress.Any, Pool.Instance.port);
+            Console.WriteLine("Server Started");
+            listener.Start();
+
             while(running) {
-                if(listner.Pending()) {
-                    if(clients.Count < maxPlayers) {
-                        Task<Client> client = new Task<Client>(() => new Client(listner.AcceptTcpClient()));
-                        client.Start();
-                        clients.Add(client);
-                    }
+                if(listener.Pending()) {
+                    ThreadPool.QueueUserWorkItem((object state) => {
+                        TcpClient clt = listener.AcceptTcpClient();
+                        Client player = new Client();
+                        Pool.Instance.clients.Add(player);
+                        Pool.Instance.clientsOnline++;
+                        player.Start(clt);
+                        Pool.Instance.clientsOnline--;
+                        Pool.Instance.clients.Remove(player);
+                    });
+                } else {
+                    Thread.Sleep(100);
                 }
-                clients.RemoveAll(x => x.IsCompleted);
             }
-            clients.ForEach(x => x.Result.Close());
-            listner.Stop();
+            listener.Stop();
         }
     }
 
