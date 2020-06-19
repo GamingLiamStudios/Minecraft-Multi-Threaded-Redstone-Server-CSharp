@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -18,45 +17,38 @@ namespace MCMTRS.Protocal578 {
     #region DataTypes
 
     public class VariableNumbers {
-        public static int ReadVarInt(BinaryReader stream, out int numRead) {
-            numRead = 0;
+        public static Tuple<int, byte> ReadVarInt(NetworkStream net) {
+            byte numRead = 0;
             int result = 0;
-            byte read;
+            Span<byte> read = new Span<byte>(new byte[1]);
             do {
-                read = stream.ReadByte();
-                int value = (read & 0x7f);
+                if(net.Read(read) == 0)
+                    return new Tuple<int, byte>(-1, 0);
+                int value = (read[0] & 0x7f);
                 result |= (value << (7 * numRead));
                 numRead++;
                 if(numRead > 5)
                     throw new TypeLoadException("VarInt is too big");
-            } while((read & 0x80) != 0);
-
-            return result;
+            } while((read[0] & 0x80) != 0);
+            return new Tuple<int, byte>(result, numRead);
         }
-        public static long ReadVarLong(BinaryReader stream, out int numRead) {
-            numRead = 0;
+
+        public static Tuple<long, byte> ReadVarLong(NetworkStream net) {
+            byte numRead = 0;
             long result = 0;
-            byte read;
+            Span<byte> read = new Span<byte>(new byte[1]);
             do {
-                read = stream.ReadByte();
-                int value = (read & 0x7f);
+                if(net.Read(read) == 0)
+                    return new Tuple<long, byte>(-1, 0);
+                int value = (read[0] & 0x7f);
                 result |= value << (7 * numRead);
                 numRead++;
                 if(numRead > 10)
-                    throw new TypeLoadException("VarLong is too big");
-            } while((read & 0x80) != 0);
+                    throw new TypeLoadException("VarInt is too big");
+            } while((read[0] & 0x80) != 0);
+            return new Tuple<long, byte>(result, numRead);
+        }
 
-            return result;
-        }
-        public static void WriteVarInt(BinaryWriter stream, int value) {
-            do {
-                byte temp = (byte)(value & 0b01111111);
-                value >>= 7;
-                if(value != 0)
-                    temp |= 0b10000000;
-                stream.Write(temp);
-            } while(value != 0);
-        }
         public static byte[] CreateVarInt(int value) {
             var stream = new MemoryStream();
             do {
@@ -68,37 +60,91 @@ namespace MCMTRS.Protocal578 {
             } while(value != 0);
             return stream.ToArray();
         }
-        public static void WriteVarLong(BinaryWriter stream, long value) {
+
+        public static byte[] CreateVarLong(long value) {
+            var stream = new MemoryStream();
             do {
                 byte temp = (byte)(value & 0b01111111);
                 value >>= 7;
                 if(value != 0)
                     temp |= 0b10000000;
-                stream.Write(temp);
+                stream.WriteByte(temp);
             } while(value != 0);
+            return stream.ToArray();
+        }
+
+        public static Tuple<int, byte> ReadVarInt(BinaryReader net) {
+            byte numRead = 0;
+            int result = 0;
+            Span<byte> read = new Span<byte>(new byte[1]);
+            do {
+                if(net.Read(read) == 0)
+                    return new Tuple<int, byte>(-1, 0);
+                int value = (read[0] & 0x7f);
+                result |= (value << (7 * numRead));
+                numRead++;
+                if(numRead > 5)
+                    throw new TypeLoadException("VarInt is too big");
+            } while((read[0] & 0x80) != 0);
+            return new Tuple<int, byte>(result, numRead);
+        }
+
+        public static Tuple<long, byte> ReadVarLong(BinaryReader net) {
+            byte numRead = 0;
+            long result = 0;
+            Span<byte> read = new Span<byte>(new byte[1]);
+            do {
+                if(net.Read(read) == 0)
+                    return new Tuple<long, byte>(-1, 0);
+                int value = (read[0] & 0x7f);
+                result |= value << (7 * numRead);
+                numRead++;
+                if(numRead > 10)
+                    throw new TypeLoadException("VarInt is too big");
+            } while((read[0] & 0x80) != 0);
+            return new Tuple<long, byte>(result, numRead);
         }
     }
 
     struct UCPacket {
         public int length;
-        public int pktID;
+        public Tuple<int, byte> pktID;
         public byte[] data;
         public BinaryReader reader;
-        public UCPacket(BinaryReader stream) {
-            length = VariableNumbers.ReadVarInt(stream, out int _);
-            pktID = VariableNumbers.ReadVarInt(stream, out int pktIDLen);
-            data = stream.ReadBytes(length - pktIDLen);
+        public UCPacket(NetworkStream net) {
+            length = VariableNumbers.ReadVarInt(net).Item1;
+            if(length == -1)
+                throw new EndOfStreamException("Unable to Load VarInt");
+            pktID = VariableNumbers.ReadVarInt(net);
+            if(pktID.Item2 == 0)
+                throw new EndOfStreamException("Unable to Load VarInt");
+            data = new byte[length - pktID.Item2];
+            if(net.Read(data) != data.Length)
+                throw new EndOfStreamException("Unable to Load VarInt");
             reader = new BinaryReader(new MemoryStream(data));
+        }
+        public UCPacket(BinaryReader stream) {
+            length = VariableNumbers.ReadVarInt(stream).Item1;
+            if(length == -1)
+                throw new EndOfStreamException("Unable to Load VarInt");
+            pktID = VariableNumbers.ReadVarInt(stream);
+            if(pktID.Item2 == 0)
+                throw new EndOfStreamException("Unable to Load VarInt");
+            data = new byte[length - pktID.Item2];
+            if(stream.Read(data) != data.Length)
+                throw new EndOfStreamException("Unable to Load VarInt");
+            reader = new BinaryReader(new MemoryStream(data));
+            Console.WriteLine("Length: {0}, ID: {1}, Data: {2}", length, pktID.Item1, Convert.ToBase64String(data));
         }
         public UCPacket(int _pktID, byte[] _data) {
             data = _data;
-            pktID = _pktID;
+            pktID = new Tuple<int, byte>(_pktID, 0);
             length = 0;
             reader = new BinaryReader(new MemoryStream(data));
         }
         public byte[] WritePacket() {
             var stream = new MemoryStream();
-            byte[] id = VariableNumbers.CreateVarInt(pktID);
+            byte[] id = VariableNumbers.CreateVarInt(pktID.Item1);
             stream.Write(id);
             stream.Write(data);
             byte[] pktData = stream.ToArray();
@@ -113,14 +159,15 @@ namespace MCMTRS.Protocal578 {
         Handshaking = 0,
         Status = 1,
         Login = 2,
-        Play = 3
+        Play = 3,
+        Disconnect = 4 //Not Offical State
     }
 
     #endregion
 
     class Client {
 
-        /* TODO
+        /* TODO For Everything thats not Play
          * Replace Encryption Libs
          * Implement Config File
          * Make Everything Async
@@ -129,13 +176,13 @@ namespace MCMTRS.Protocal578 {
          * Legacy Server List Ping: Implement Server List Ping
          * Set Compression: Add It
          * Login Plguin: Add It
-         * Request: Implement MOTD
+         * Request: Implement MOTD & faviconIcon
          */
 
         #region Variables
 
         protected string username, uuid, socketIp;
-        protected bool compression, connected, encrypted;
+        protected bool compression, encrypted;
         protected State currentState;
         protected RSACryptoServiceProvider rsa; //TODO
         protected AesManaged aes; //TODO
@@ -150,7 +197,6 @@ namespace MCMTRS.Protocal578 {
         public Client() {
             rsa = new RSACryptoServiceProvider(1024);
             compression = false;
-            connected = true;
             encrypted = false;
             currentState = State.Handshaking;
         }
@@ -160,21 +206,16 @@ namespace MCMTRS.Protocal578 {
                 return;
             socketIp = user.Client.RemoteEndPoint.ToString();
             NetworkStream net = user.GetStream();
-            Stopwatch s = new Stopwatch();
-            s.Start();
-            //TODO: Improve this
-            while(connected && user.Connected) {
-                while(!net.DataAvailable && user.Connected && connected && s.ElapsedMilliseconds < 30000)
-                    ;
-                if(s.ElapsedMilliseconds >= 30000) {
-                    Close();
-                    break;
-                }
+            net.ReadTimeout = 30000;
+            while(IsDisconnected(user))
                 HandlePacket(net);
-                s.Restart();
-            }
+            //TODO: Improve this
+            //while(IsDisconnected(user)) {
+            //    while(!net.DataAvailable && IsDisconnected(user))
+            //        ; //Waits for next Packet unless Disconnected or Timed out
+            //    HandlePacket(net);
+            //}
             Close();
-            s.Stop();
             rsa.Dispose();
             net.Close();
             net.Dispose();
@@ -183,15 +224,19 @@ namespace MCMTRS.Protocal578 {
             Console.WriteLine("Connection with {0} has been lost", username);
         }
 
+        private bool IsDisconnected(TcpClient user) {
+            return !currentState.Equals(State.Disconnect) && user.Connected;
+        }
+
         public void Close() {
-            connected = false;
             if(currentState.Equals(State.Play))
                 Pool.Instance.connected--;
-            currentState = State.Handshaking;
+            currentState = State.Disconnect;
         }
 
         public void HandlePacket(NetworkStream net) {
-            UCPacket packet = new UCPacket(new BinaryReader(net));
+            UCPacket packet;
+            try { packet = new UCPacket(net); } catch(EndOfStreamException e) { Close(); return; }
             switch(currentState) {
                 case State.Handshaking:
                     HandleHandshakingPackets(net, packet);
@@ -212,7 +257,7 @@ namespace MCMTRS.Protocal578 {
         #region Handshaking
 
         private void HandleHandshakingPackets(NetworkStream net, UCPacket packet) {
-            switch(packet.pktID) {
+            switch(packet.pktID.Item1) {
                 case 0x00://Handshake
                     HandshakingHandshake(packet);
                     break;
@@ -225,11 +270,11 @@ namespace MCMTRS.Protocal578 {
         #region Serverbound
 
         private void HandshakingHandshake(UCPacket packet) {
-            if(VariableNumbers.ReadVarInt(packet.reader, out int _) != 578)
+            if(VariableNumbers.ReadVarInt(packet.reader).Item1 != 578)
                 ;//TODO
-            packet.reader.ReadBytes(VariableNumbers.ReadVarInt(packet.reader, out int __)); //Unused
+            packet.reader.ReadBytes(VariableNumbers.ReadVarInt(packet.reader).Item1); //Unused
             packet.reader.ReadBytes(2); //Unused
-            currentState = (State)VariableNumbers.ReadVarInt(packet.reader, out __);
+            currentState = (State)VariableNumbers.ReadVarInt(packet.reader).Item1;
         }
 
         private void HandshakingLegacyServerListPing(NetworkStream net, UCPacket packet) {
@@ -243,7 +288,7 @@ namespace MCMTRS.Protocal578 {
         #region Status
 
         private void HandleStatusPackets(NetworkStream net, UCPacket packet) {
-            switch(packet.pktID) {
+            switch(packet.pktID.Item1) {
                 case 0x00: //Request
                     StatusRequest(net, packet);
                     break;
@@ -310,7 +355,7 @@ namespace MCMTRS.Protocal578 {
         #region Login
 
         private void HandleLoginPackets(NetworkStream net, UCPacket packet) {
-            switch(packet.pktID) {
+            switch(packet.pktID.Item1) {
                 case 0x00:
                     LoginLoginStart(net, packet);
                     break;
@@ -358,7 +403,7 @@ namespace MCMTRS.Protocal578 {
         #region Serverbound
 
         private void LoginLoginStart(NetworkStream net, UCPacket packet) {
-            username = Encoding.UTF8.GetString(packet.reader.ReadBytes(VariableNumbers.ReadVarInt(packet.reader, out int _)));
+            username = Encoding.UTF8.GetString(packet.reader.ReadBytes(VariableNumbers.ReadVarInt(packet.reader).Item1));
             if(Pool.Instance.OnlineMode) { //Online Mode
                 LoginEncryptionRequest(net);
             } else { //Offline Mode
@@ -368,9 +413,9 @@ namespace MCMTRS.Protocal578 {
         }
 
         private void LoginEncryptionResponse(NetworkStream net, UCPacket packet) {
-            var secret = rsa.Decrypt(packet.reader.ReadBytes(VariableNumbers.ReadVarInt(packet.reader, out _)),
+            var secret = rsa.Decrypt(packet.reader.ReadBytes(VariableNumbers.ReadVarInt(packet.reader).Item1),
                         RSAEncryptionPadding.Pkcs1);
-            byte[] clientVerify = rsa.Decrypt(packet.reader.ReadBytes(VariableNumbers.ReadVarInt(packet.reader, out _)),
+            byte[] clientVerify = rsa.Decrypt(packet.reader.ReadBytes(VariableNumbers.ReadVarInt(packet.reader).Item1),
                 RSAEncryptionPadding.Pkcs1);
             MemoryStream stream = new MemoryStream();
             if(!ArraysEqual(clientVerify, verify)) {
