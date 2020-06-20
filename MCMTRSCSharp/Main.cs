@@ -1,14 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
-using System.IO.Pipes;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
-using System.Threading.Tasks;
 using MCMTRS.Protocal578;
 
 namespace MCMTRS {
@@ -16,6 +15,8 @@ namespace MCMTRS {
         private static readonly Lazy<Pool> lazy = new Lazy<Pool>(() => new Pool());
 
         public List<Client> players;
+        public List<Entity> entities;
+        public byte[] seedHash;
         public int clients;
         public JsonElement properties;
 
@@ -28,6 +29,7 @@ namespace MCMTRS {
         private Pool() {
             clients = 0;
             players = new List<Client>();
+            entities = new List<Entity>();
         }
     }
 
@@ -49,7 +51,10 @@ namespace MCMTRS {
                 CreatePropertiesFile(propertiesPath);
             ReadPropertiesFile(propertiesPath);
             var ip = Pool.Instance.properties.GetProperty("server-ip").GetString();
-            listener = new TcpListener(ip!=""?IPAddress.Parse(ip):IPAddress.Any, Pool.Instance.properties.GetProperty("server-port").GetInt32());
+            listener = new TcpListener(ip!=""?IPAddress.Parse(ip):IPAddress.Any, Pool.Instance.properties.GetProperty("server-port")
+                .GetInt32());
+            Pool.Instance.seedHash = SHA256.Create().ComputeHash(BitConverter.GetBytes(Pool.Instance.properties.GetProperty("level-seed")
+                .GetInt64()));
 
             //Listen For Clients
             Console.WriteLine("Server Started");
@@ -75,6 +80,8 @@ namespace MCMTRS {
         }
 
         public void CreatePropertiesFile(string path) {
+            var seed = new byte[8];
+            new Random().NextBytes(seed);
             StreamWriter writer = File.CreateText(path);
             writer.WriteLine("#Minecraft server properties");
             writer.WriteLine("#({0})", DateTime.Now.ToString());
@@ -85,8 +92,9 @@ namespace MCMTRS {
                 "\nenable-command-block=false\nnetwork-compression-threshold=256\nmax-players=20\nmax-world-size=29999984" +
                 "\nresource-pack-sha1=\nfunction-permission-level=2\nrcon.port=25575\nserver-port=25565\nserver-ip=\nspawn-npcs=true" +
                 "\nallow-flight=false\nlevel-name=world\nview-distance=10\nresource-pack=\nspawn-animals=true\nwhite-list=false" +
-                "\nrcon.password=\ngenerate-structures=true\nonline-mode=true\nmax-build-height=256\nlevel-seed=" +
-                "\nprevent-proxy-connections=false\nuse-native-transport=true\nmotd=A Minecraft Server\nenable-rcon=false");
+                "\nrcon.password=\ngenerate-structures=true\nonline-mode=true\nmax-build-height=256\nlevel-seed=" + 
+                 BitConverter.ToInt64(seed) + "\nprevent-proxy-connections=false\nuse-native-transport=true" +
+                "\nmotd=A Minecraft Server\nenable-rcon=false");
             writer.Flush();
             writer.Close();
             writer.Dispose();

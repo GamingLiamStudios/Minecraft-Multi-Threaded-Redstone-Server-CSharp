@@ -3,11 +3,11 @@ using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Numerics;
-using System.Runtime.InteropServices.ComTypes;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
+using SimplexNoise;
 
 namespace MCMTRS.Protocal578 {
 
@@ -120,14 +120,14 @@ namespace MCMTRS.Protocal578 {
             pktID = VariableNumbers.ReadVarInt(net);
             if(pktID.Item2 == 0)
                 throw new EndOfStreamException("Unable to Load VarInt");
-            Console.Write(", ID: " + pktID.Item1);
+            Console.Write(", ID: " + new BigInteger(pktID.Item1).ToString("x").PadLeft(2, '0'));
             data = new byte[length - pktID.Item2];
             if(data.Length != 0) {
                 if(net.Read(data, 0, data.Length) != data.Length)
                     throw new EndOfStreamException("Unable to Load VarInt");
             }
             reader = new BinaryReader(new MemoryStream(data));
-            Console.WriteLine(", Data: ", new BigInteger(data).ToString("X"));
+            Console.WriteLine(", Data: " + new BigInteger(data).ToString("X"));
         }
         public UCPacket(BinaryReader stream) {
             length = VariableNumbers.ReadVarInt(stream).Item1;
@@ -140,7 +140,7 @@ namespace MCMTRS.Protocal578 {
             if(stream.Read(data) != data.Length)
                 throw new EndOfStreamException("Unable to Load VarInt");
             reader = new BinaryReader(new MemoryStream(data));
-            Console.WriteLine("Length: {0}, ID: {1}, Data: {2}", length, pktID.Item1, new BigInteger(data).ToString("X"));
+            Console.WriteLine("Length: {0}, ID: {1}, Data: {2}", length, pktID.Item1, new BigInteger(data).ToString("x"));
         }
         public UCPacket(int _pktID, byte[] _data) {
             data = _data;
@@ -161,6 +161,10 @@ namespace MCMTRS.Protocal578 {
         }
     }
 
+    struct Entity {
+        public int ID;
+    }
+
     enum State {
         Handshaking = 0,
         Status = 1,
@@ -170,11 +174,17 @@ namespace MCMTRS.Protocal578 {
     }
 
     public enum Gamemode {
-        
+        Survival,
+        Creative,
+        Adventure,
+        Spectator,
+        Hardcore
     }
 
     public enum Dimension {
-
+        Nether = -1,
+        Overworld,
+        End
     }
 
     #endregion
@@ -255,6 +265,9 @@ namespace MCMTRS.Protocal578 {
                     break;
                 case State.Login:
                     HandleLoginPackets(net, packet);
+                    break;
+                case State.Play:
+                    HandlePlayPackets(net, packet);
                     break;
             }
         }
@@ -484,21 +497,78 @@ namespace MCMTRS.Protocal578 {
 
         #region Play
 
+        private void HandlePlayPackets(NetworkStream net, UCPacket packet) {
+            switch(packet.pktID.Item1) {
+                case 0x05://Client Settings
+                    //TODO: Implement
+                    break;
+                case 0x0B://Plugin Message (serverbound)
+                    PlayPluginMessageServer(net, packet);
+                    break;
+            }
+        }
+
         private void PlayStart(NetworkStream net) {
-        
+            PlayJoinGame(net);
+            PlayPluginMessageClient(net, "minecraft:brand");
+            PlayDisconnect(net, "The Ban Hammer has Spoken");
         }
 
         #region Clientbound
 
         private void PlayJoinGame(NetworkStream net) {
-        
+            var stream = new MemoryStream();
+            stream.Write(BitConverter.GetBytes(GetNextEntityID()));
+            stream.WriteByte((byte)(int)Enum.Parse(typeof(Gamemode), Pool.Instance.properties.GetProperty("gamemode").GetString(), true));
+            stream.Write(BitConverter.GetBytes((int)Dimension.Overworld));
+            stream.Write(Pool.Instance.seedHash.AsSpan().Slice(0, 8));
+            stream.WriteByte(20); //Unused by Client and actual max players MAY be over 255
+            var levelType = Encoding.UTF8.GetBytes(Pool.Instance.properties.GetProperty("level-type").GetString());
+            stream.Write(VariableNumbers.CreateVarInt(levelType.Length));
+            stream.Write(levelType);
+            stream.Write(VariableNumbers.CreateVarInt(Pool.Instance.properties.GetProperty("view-distance").GetInt32()));
+            stream.Write(new byte[2] { 0x01, 0x01 }); //Reduced Debug Info Enabled & doImmediateRespawn False cause no GameRules yet
+            var packet = new UCPacket(0x26, stream.ToArray());
+            WritePacket(net, packet);
+        }
+
+        private void PlayPluginMessageClient(NetworkStream net, string serverMessage) {
+            var stream = new MemoryStream();
+            var messageSplit = serverMessage.Split(":");
+            stream.Write(VariableNumbers.CreateVarInt(messageSplit[0].Length));
+            stream.Write(Encoding.UTF8.GetBytes(messageSplit[0]));
+            if(serverMessage.Split(":")[0] == "minecraft")
+                switch(serverMessage.Split(":")[1]) {
+                    case "brand":
+                        stream.Write(Encoding.UTF8.GetBytes("brand:mcmtrs"));
+                        break;
+                }
+            var packet = new UCPacket(0x19, stream.ToArray());
+            WritePacket(net, packet);
+        }
+
+        private void PlayDisconnect(NetworkStream net, string reason) {
+            var stream = new MemoryStream();
+            using(var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true })) {
+                writer.WriteStartObject();
+                writer.WriteString("text", reason);
+                writer.WriteEndObject();
+            }
+            WriteMessageClose(net, 0x1B, stream.ToArray());
+            Console.WriteLine("Disconnected {0} for Reason: {1}", username, reason);
         }
 
         #endregion
 
         #region Serverbound
 
-
+        private void PlayPluginMessageServer(NetworkStream net, UCPacket packet) {
+            var identifier = VariableNumbers.ReadVarInt(packet.reader);
+            string channel = Encoding.UTF8.GetString(packet.reader.ReadBytes(identifier.Item1));
+            string data = Encoding.UTF8.GetString(packet.reader.ReadBytes(packet.data.Length - identifier.Item2));
+            Console.WriteLine(channel + ":" + data);
+            //TODO: Implement all the important messages
+        }
 
         #endregion
 
@@ -515,6 +585,10 @@ namespace MCMTRS.Protocal578 {
             UCPacket packet = new UCPacket(LeaveID, stream.ToArray());
             WritePacket(net, packet);
             Close();
+        }
+
+        private int GetNextEntityID() {
+            return Pool.Instance.entities.Count;
         }
 
         public void WritePacket(NetworkStream net, UCPacket packet) {
