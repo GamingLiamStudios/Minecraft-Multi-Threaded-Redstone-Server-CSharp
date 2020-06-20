@@ -6,6 +6,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using MCMTRS.Protocal578;
@@ -14,9 +15,9 @@ namespace MCMTRS {
     sealed class Pool {
         private static readonly Lazy<Pool> lazy = new Lazy<Pool>(() => new Pool());
 
-        public List<Client> clients = new List<Client>();
-        public int port = 25565, maxPlayers = 10, clientsOnline = 0, connected = 0;
-        public bool OnlineMode = true;
+        public List<Client> players;
+        public int clients;
+        public JsonElement properties;
 
         public static Pool Instance {
             get {
@@ -25,52 +26,100 @@ namespace MCMTRS {
         }
 
         private Pool() {
+            clients = 0;
+            players = new List<Client>();
         }
     }
 
     class Server {
         TcpListener listener;
         bool running;
+        string propertiesPath;
 
         static void Main(string[] args) {
             new Server(args);
         }
 
         public Server(string[] args) {
+            //Server Init
             ConsoleErrorWriterDecorator.SetToConsole();
             running = true;
-            for(int i = 0; i < args.Length; i++)
-                switch(args[i]) {
-                    case "-port":
-                        Pool.Instance.port = int.Parse(args[i++]);
-                        break;
-                    case "-maxplayers":
-                        Pool.Instance.maxPlayers = int.Parse(args[i++]);
-                        break;
-                    case "-offlinemode":
-                        Pool.Instance.OnlineMode = false;
-                        break;
-                }
-            listener = new TcpListener(IPAddress.Any, Pool.Instance.port);
+            propertiesPath = Directory.GetCurrentDirectory() + "\\server.properties";
+            if(!File.Exists(propertiesPath))
+                CreatePropertiesFile(propertiesPath);
+            ReadPropertiesFile(propertiesPath);
+            var ip = Pool.Instance.properties.GetProperty("server-ip").GetString();
+            listener = new TcpListener(ip!=""?IPAddress.Parse(ip):IPAddress.Any, Pool.Instance.properties.GetProperty("server-port").GetInt32());
+
+            //Listen For Clients
             Console.WriteLine("Server Started");
             listener.Start();
-
             while(running) {
                 if(listener.Pending()) {
                     ThreadPool.QueueUserWorkItem((object state) => {
                         TcpClient clt = listener.AcceptTcpClient();
-                        Client player = new Client();
-                        Pool.Instance.clients.Add(player);
-                        Pool.Instance.clientsOnline++;
-                        player.Start(clt);
-                        Pool.Instance.clientsOnline--;
-                        Pool.Instance.clients.Remove(player);
+                        Client client = new Client();
+                        Pool.Instance.clients++;
+                        client.Start(clt);
+                        Pool.Instance.clients--;
+                        if(Pool.Instance.players.Contains(client))
+                            Pool.Instance.players.Remove(client);
                     });
                 } else {
                     Thread.Sleep(100);
                 }
             }
+
+            //Clean Up
             listener.Stop();
+        }
+
+        public void CreatePropertiesFile(string path) {
+            StreamWriter writer = File.CreateText(path);
+            writer.WriteLine("#Minecraft server properties");
+            writer.WriteLine("#({0})", DateTime.Now.ToString());
+            writer.Write("spawn-protection=16\nmax-tick-time=60000\nquery.port=25565\ngenerator-settings=\nsync-chunk-writes=true" +
+                "\nforce-gamemode=false\nallow-nether=true\nenforce-whitelist=false\ngamemode=survival\nbroadcast-console-to-ops=true" +
+                "\nenable-query=false\nplayer-idle-timeout=0\ndifficulty=easy\nbroadcast-rcon-to-ops=true\nspawn-monsters=true" +
+                "\nop-permission-level=4\npvp=true\nsnooper-enabled=true\nlevel-type=default\nhardcore=false" +
+                "\nenable-command-block=false\nnetwork-compression-threshold=256\nmax-players=20\nmax-world-size=29999984" +
+                "\nresource-pack-sha1=\nfunction-permission-level=2\nrcon.port=25575\nserver-port=25565\nserver-ip=\nspawn-npcs=true" +
+                "\nallow-flight=false\nlevel-name=world\nview-distance=10\nresource-pack=\nspawn-animals=true\nwhite-list=false" +
+                "\nrcon.password=\ngenerate-structures=true\nonline-mode=true\nmax-build-height=256\nlevel-seed=" +
+                "\nprevent-proxy-connections=false\nuse-native-transport=true\nmotd=A Minecraft Server\nenable-rcon=false");
+            writer.Flush();
+            writer.Close();
+            writer.Dispose();
+        }
+
+        public void ReadPropertiesFile(string path) {
+            StreamReader reader = File.OpenText(path);
+            var options = new JsonWriterOptions {
+                Indented = true
+            };
+            var stream = new MemoryStream();
+            using(var writer = new Utf8JsonWriter(stream, options)) {
+                writer.WriteStartObject();
+                string line;
+                while((line = reader.ReadLine()) != null) {
+                    if(!line.StartsWith("#")) {
+                        var split = line.Split("=");
+                        if(split[1] == "")
+                            writer.WriteString(split[0], split[1]);
+                        else if(char.IsDigit(split[1].First()))
+                            writer.WriteNumber(split[0], long.Parse(split[1]));
+                        else if(split[1].Equals("true") || split[1].Equals("false"))
+                            writer.WriteBoolean(split[0], split[1].Equals("true"));
+                        else
+                            writer.WriteString(split[0], split[1]);
+                    }
+                }
+                writer.WriteEndObject();
+            }
+            Pool.Instance.properties = JsonDocument.Parse(Encoding.UTF8.GetString(stream.ToArray())).RootElement;
+            stream.Close();
+            reader.Close();
+            reader.Dispose();
         }
     }
 

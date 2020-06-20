@@ -169,20 +169,27 @@ namespace MCMTRS.Protocal578 {
         Disconnect = 4 //Not Offical State
     }
 
+    public enum Gamemode {
+        
+    }
+
+    public enum Dimension {
+
+    }
+
     #endregion
 
     class Client {
 
         /* TODO For Everything thats not Play
          * Replace Encryption Libs
-         * Implement Config File
          * Make Everything Async
          * 
          * Handshake: Wrong Version Error Message at Client
          * Legacy Server List Ping: Implement Server List Ping
          * Set Compression: Add It
          * Login Plguin: Add It
-         * Request: Implement MOTD & faviconIcon
+         * Request: Implement faviconIcon
          */
 
         #region Variables
@@ -194,7 +201,6 @@ namespace MCMTRS.Protocal578 {
         protected AesManaged aes; //TODO
         protected ICryptoTransform enc, dec;
         protected byte[] verify, publicKey;
-        protected JsonDocument json;
 
         #endregion
 
@@ -214,8 +220,8 @@ namespace MCMTRS.Protocal578 {
             NetworkStream net = user.GetStream();
             net.ReadTimeout = 30000;
             //TODO: Improve this
-            while(IsDisconnected(user)) {
-                while(!net.DataAvailable && IsDisconnected(user))
+            while(IsConnected(user)) {
+                while(!net.DataAvailable && IsConnected(user))
                     ; //Waits for next Packet unless Disconnected
                 HandlePacket(net);
             }
@@ -228,13 +234,11 @@ namespace MCMTRS.Protocal578 {
             Console.WriteLine("Connection with {0} has been lost", username);
         }
 
-        private bool IsDisconnected(TcpClient user) {
+        private bool IsConnected(TcpClient user) {
             return !currentState.Equals(State.Disconnect) && user.Connected;
         }
 
         public void Close() {
-            if(currentState.Equals(State.Play))
-                Pool.Instance.connected--;
             currentState = State.Disconnect;
         }
 
@@ -332,13 +336,13 @@ namespace MCMTRS.Protocal578 {
                     writer.WriteNumber("protocol", 578);
                     writer.WriteEndObject(); //End Version Object
                     writer.WriteStartObject("players"); //Start Players Object
-                    writer.WriteNumber("max", Pool.Instance.maxPlayers);
-                    writer.WriteNumber("online", Pool.Instance.connected);
+                    writer.WriteNumber("max", Pool.Instance.properties.GetProperty("max-players").GetInt64());
+                    writer.WriteNumber("online", Pool.Instance.players.Count);
                     writer.WriteStartArray("sample"); //Start Sample Array
                     writer.WriteEndArray(); //End Sample Array
                     writer.WriteEndObject(); //End Players Object
                     writer.WriteStartObject("description"); //Start Description Object
-                    writer.WriteString("text", "TODO: Implement MOTD");
+                    writer.WriteString("text", Pool.Instance.properties.GetProperty("motd").GetString());
                     writer.WriteEndObject(); //End Description Object
                     writer.WriteEndObject();
                 }
@@ -403,8 +407,8 @@ namespace MCMTRS.Protocal578 {
             WritePacket(net, packet);
             currentState = State.Play;
             Console.WriteLine("Player {0} has Joined.", username);
-            Pool.Instance.connected++;
-            Close();
+            Pool.Instance.players.Add(this);
+            PlayStart(net);
         }
 
         #endregion
@@ -413,7 +417,7 @@ namespace MCMTRS.Protocal578 {
 
         private void LoginLoginStart(NetworkStream net, UCPacket packet) {
             username = Encoding.UTF8.GetString(packet.reader.ReadBytes(VariableNumbers.ReadVarInt(packet.reader).Item1));
-            if(Pool.Instance.OnlineMode && !socketIp.StartsWith("127.0.0.1")) { //Online Mode
+            if(Pool.Instance.properties.GetProperty("online-mode").GetBoolean() && !socketIp.StartsWith("127.0.0.1")) { //Online Mode
                 LoginEncryptionRequest(net);
             } else { //Offline Mode
                 uuid = GenerateOfflineUUID(username).Insert(8, "-").Insert(13, "-").Insert(18, "-").Insert(23, "-");
@@ -448,6 +452,7 @@ namespace MCMTRS.Protocal578 {
             request.Headers.Add("User-Agent", "Mozilla/4.0 (compatible; MSIE 8.0)");
             Task<string> response = request.DownloadStringTaskAsync(URL);
             response.Wait(25000);
+            JsonDocument json;
             if(response.IsCompleted)
                 using(StreamReader sr = new StreamReader(new MemoryStream(Encoding.UTF8.GetBytes(response.Result)), Encoding.UTF8))
                     json = JsonDocument.Parse(sr.ReadToEnd(), new JsonDocumentOptions { AllowTrailingCommas = true });
@@ -479,7 +484,23 @@ namespace MCMTRS.Protocal578 {
 
         #region Play
 
+        private void PlayStart(NetworkStream net) {
+        
+        }
 
+        #region Clientbound
+
+        private void PlayJoinGame(NetworkStream net) {
+        
+        }
+
+        #endregion
+
+        #region Serverbound
+
+
+
+        #endregion
 
         #endregion
 
