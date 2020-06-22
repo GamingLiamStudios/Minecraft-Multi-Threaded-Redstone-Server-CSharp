@@ -1,5 +1,8 @@
-﻿using System;
+﻿using fNbt;
+using fNbt.Tags;
+using System;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Numerics;
@@ -7,7 +10,6 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
-using SimplexNoise;
 
 namespace MCMTRS.Protocal578 {
 
@@ -54,11 +56,12 @@ namespace MCMTRS.Protocal578 {
             var stream = new MemoryStream();
             do {
                 byte temp = (byte)(value & 0b01111111);
-                value >>= 7;
+                value = (int)((uint)value >> 7);
                 if(value != 0)
                     temp |= 0b10000000;
                 stream.WriteByte(temp);
             } while(value != 0);
+            Console.WriteLine();
             return stream.ToArray();
         }
 
@@ -116,18 +119,18 @@ namespace MCMTRS.Protocal578 {
             length = VariableNumbers.ReadVarInt(net).Item1;
             if(length == -1)
                 throw new EndOfStreamException("Unable to Load VarInt");
-            Console.Write("Length: " + length);
             pktID = VariableNumbers.ReadVarInt(net);
             if(pktID.Item2 == 0)
                 throw new EndOfStreamException("Unable to Load VarInt");
-            Console.Write(", ID: " + new BigInteger(pktID.Item1).ToString("x").PadLeft(2, '0'));
             data = new byte[length - pktID.Item2];
             if(data.Length != 0) {
                 if(net.Read(data, 0, data.Length) != data.Length)
                     throw new EndOfStreamException("Unable to Load VarInt");
             }
             reader = new BinaryReader(new MemoryStream(data));
-            Console.WriteLine(", Data: " + new BigInteger(data).ToString("X"));
+            Console.WriteLine("Recieved Packet: Length: {0}, ID: {1}, Data: {2}", length,
+                new BigInteger(pktID.Item1).ToString("x").PadLeft(2, '0'), new BigInteger(data).ToString("x") + " | "
+                + Encoding.UTF8.GetString(data));
         }
         public UCPacket(BinaryReader stream) {
             length = VariableNumbers.ReadVarInt(stream).Item1;
@@ -140,7 +143,9 @@ namespace MCMTRS.Protocal578 {
             if(stream.Read(data) != data.Length)
                 throw new EndOfStreamException("Unable to Load VarInt");
             reader = new BinaryReader(new MemoryStream(data));
-            Console.WriteLine("Length: {0}, ID: {1}, Data: {2}", length, pktID.Item1, new BigInteger(data).ToString("x"));
+            Console.WriteLine("Recieved Packet: Length: {0}, ID: {1}, Data: {2}", length,
+                new BigInteger(pktID.Item1).ToString("x").PadLeft(2, '0'), new BigInteger(data).ToString("x") + " | "
+                + Encoding.UTF8.GetString(data));
         }
         public UCPacket(int _pktID, byte[] _data) {
             data = _data;
@@ -157,6 +162,7 @@ namespace MCMTRS.Protocal578 {
             stream.SetLength(0);
             stream.Write(VariableNumbers.CreateVarInt(pktData.Length));
             stream.Write(pktData);
+            Console.WriteLine("Sending Packet With ID: " + pktID.Item1);
             return stream.ToArray();
         }
     }
@@ -187,6 +193,47 @@ namespace MCMTRS.Protocal578 {
         End
     }
 
+    public struct Player {
+        public string uuid;
+        public string name;
+        public struct Property {
+            public string name;
+            public string value;
+            public bool isSigned;
+            public string signature;
+            public Property(string _name, string _value, string _signature = null) {
+                name = _name;
+                value = _value;
+                signature = _signature;
+                isSigned = signature != null;
+            }
+        }
+        public Property[] properties;
+        public Gamemode gamemode;
+        public int ping;
+        public bool hasDisplayName;
+        public byte[] displayName;
+        public Player(string _uuid, string _name, Property[] _properties, Gamemode _gamemode, int _ping, byte[] _displayName = null) {
+            uuid = _uuid;
+            name = _name;
+            properties = _properties;
+            gamemode = _gamemode;
+            ping = _ping;
+            displayName = _displayName;
+            hasDisplayName = displayName != null;
+        }
+    }
+
+    public struct PlayerInfoData {
+        public enum Action { AddPlayer, UpdateGamemode, UpdateLatency, UpdateDisplayName, RemovePlayer }
+        public Action action;
+        public Player[] players;
+        public PlayerInfoData(Action _action, Player[] _players) {
+            action = _action;
+            players = _players;
+        }
+    }
+
     #endregion
 
     class Client {
@@ -211,6 +258,9 @@ namespace MCMTRS.Protocal578 {
         protected AesManaged aes; //TODO
         protected ICryptoTransform enc, dec;
         protected byte[] verify, publicKey;
+        protected JsonElement profileSkin;
+        protected Player player;
+        protected int next;
 
         #endregion
 
@@ -253,7 +303,6 @@ namespace MCMTRS.Protocal578 {
         }
 
         public void HandlePacket(NetworkStream net) {
-            Console.WriteLine("Reading Next Packet");
             UCPacket packet;
             try { packet = new UCPacket(net); } catch(EndOfStreamException e) { Close(); return; } //Timeout Detection
             switch(currentState) {
@@ -325,12 +374,10 @@ namespace MCMTRS.Protocal578 {
 
         private void StatusRequest(NetworkStream net, UCPacket packet) {
             StatusResponse(net, packet);
-            Console.WriteLine("Responded");
         }
 
         private void StatusPing(NetworkStream net, UCPacket packet) {
             StatusPong(net, packet);
-            Console.WriteLine("Ponged");
         }
 
         #endregion
@@ -360,7 +407,6 @@ namespace MCMTRS.Protocal578 {
                     writer.WriteEndObject();
                 }
                 var response = stream.ToArray();
-                Console.WriteLine(Encoding.UTF8.GetString(response));
                 stream.SetLength(0);
                 stream.Write(VariableNumbers.CreateVarInt(response.Length));
                 stream.Write(response);
@@ -392,6 +438,17 @@ namespace MCMTRS.Protocal578 {
         }
 
         #region Clientbound
+
+        private void LoginDisconnect(NetworkStream net, string reason) {
+            var stream = new MemoryStream();
+            using(var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true })) {
+                writer.WriteStartObject();
+                writer.WriteString("text", reason);
+                writer.WriteEndObject();
+            }
+            WriteMessageClose(net, 0x00, stream.ToArray());
+            Console.WriteLine("Disconnected {0} for Reason: {1}", username, reason);
+        }
 
         private void LoginEncryptionRequest(NetworkStream net) {
             MemoryStream stream = new MemoryStream();
@@ -458,35 +515,19 @@ namespace MCMTRS.Protocal578 {
             stream.Write(secret);
             stream.Write(publicKey);
             var hash = MinecraftShaDigest(new SHA1Managed().ComputeHash(stream.ToArray()));
-            string URL = string.Format("https://sessionserver.mojang.com/session/minecraft/hasJoined?username={0}&serverId={1}",
+            string url = string.Format("https://sessionserver.mojang.com/session/minecraft/hasJoined?username={0}&serverId={1}",
                 username, hash);
-            Console.WriteLine(URL);
-            var request = new WebClient();
-            request.Headers.Add("User-Agent", "Mozilla/4.0 (compatible; MSIE 8.0)");
-            Task<string> response = request.DownloadStringTaskAsync(URL);
-            response.Wait(25000);
-            JsonDocument json;
-            if(response.IsCompleted)
-                using(StreamReader sr = new StreamReader(new MemoryStream(Encoding.UTF8.GetBytes(response.Result)), Encoding.UTF8))
-                    json = JsonDocument.Parse(sr.ReadToEnd(), new JsonDocumentOptions { AllowTrailingCommas = true });
-            else {
-                stream.SetLength(0);
-                using(var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true })) {
-                    writer.WriteStartObject();
-                    writer.WriteString("text", "Timeout");
-                    writer.WriteEndObject();
-                }
-                Console.WriteLine(socketIp + " Failed To Authenticate With Mojang Servers");
-                WriteMessageClose(net, 0x00, stream.ToArray());
-                return;
-            }
+            profileSkin = GetJsonFromURL(net, url, true);
+            if(profileSkin.TryGetProperty("id", out JsonElement value))
+                if(value.GetString().Equals(""))
+                    return;
             aes = new AesManaged();
             aes.Key = aes.IV = secret;
             enc = aes.CreateEncryptor();
             dec = aes.CreateDecryptor();
             encrypted = true;
             stream.SetLength(0);
-            var tmp = json.RootElement.GetProperty("id").GetString();
+            var tmp = profileSkin.GetProperty("id").GetString();
             uuid = tmp.Insert(8, "-").Insert(13, "-").Insert(18, "-").Insert(23, "-");
             LoginLoginSuccess(net);
         }
@@ -499,6 +540,9 @@ namespace MCMTRS.Protocal578 {
 
         private void HandlePlayPackets(NetworkStream net, UCPacket packet) {
             switch(packet.pktID.Item1) {
+                case 0x00:
+                    PlayTeleportConfirm(net, packet);
+                    break;
                 case 0x05://Client Settings
                     //TODO: Implement
                     break;
@@ -511,26 +555,26 @@ namespace MCMTRS.Protocal578 {
         private void PlayStart(NetworkStream net) {
             PlayJoinGame(net);
             PlayPluginMessageClient(net, "minecraft:brand");
-            PlayDisconnect(net, "The Ban Hammer has Spoken");
+            PlaySpawnPosition(net);
+            PlayPlayerPositionAndLookClient(net);
+            PlayChunkData(net, 0, 0);
+            PlayChunkData(net, -1, 0);
+            PlayChunkData(net, 0, -1);
+            PlayChunkData(net, -1, -1);
+            //if(profileSkin.Equals(new JsonElement()))
+            //    profileSkin = GetJsonFromURL(net, string.Format("https://sessionserver.mojang.com/session/minecraft/profile/{0}?unsigned=false", uuid), false);
+            //var skinBlob = profileSkin.GetProperty("properties").EnumerateArray().First();
+            //if(skinBlob.TryGetProperty("name", out _)) {
+            //    PlayPlayerInfo(net, new PlayerInfoData(PlayerInfoData.Action.AddPlayer, new Player[] { new Player(uuid, username,
+            //    new Player.Property[] { new Player.Property(skinBlob.GetProperty("name").GetString(), skinBlob.GetProperty("value").GetString(),
+            //    skinBlob.GetProperty("signature").GetString()) }, (Gamemode)Enum.Parse(typeof(Gamemode), Pool.Instance.properties.GetProperty("gamemode").GetString()
+            //    ,true), 10) }));
+            //} else
+            //    PlayPlayerInfo(net, new PlayerInfoData(PlayerInfoData.Action.AddPlayer, new Player[] { new Player(uuid, username,
+            //    new Player.Property[] { }, (Gamemode)Enum.Parse(typeof(Gamemode), Pool.Instance.properties.GetProperty("gamemode").GetString(), true), 10) }));
         }
 
         #region Clientbound
-
-        private void PlayJoinGame(NetworkStream net) {
-            var stream = new MemoryStream();
-            stream.Write(BitConverter.GetBytes(GetNextEntityID()));
-            stream.WriteByte((byte)(int)Enum.Parse(typeof(Gamemode), Pool.Instance.properties.GetProperty("gamemode").GetString(), true));
-            stream.Write(BitConverter.GetBytes((int)Dimension.Overworld));
-            stream.Write(Pool.Instance.seedHash.AsSpan().Slice(0, 8));
-            stream.WriteByte(20); //Unused by Client and actual max players MAY be over 255
-            var levelType = Encoding.UTF8.GetBytes(Pool.Instance.properties.GetProperty("level-type").GetString());
-            stream.Write(VariableNumbers.CreateVarInt(levelType.Length));
-            stream.Write(levelType);
-            stream.Write(VariableNumbers.CreateVarInt(Pool.Instance.properties.GetProperty("view-distance").GetInt32()));
-            stream.Write(new byte[2] { 0x01, 0x01 }); //Reduced Debug Info Enabled & doImmediateRespawn False cause no GameRules yet
-            var packet = new UCPacket(0x26, stream.ToArray());
-            WritePacket(net, packet);
-        }
 
         private void PlayPluginMessageClient(NetworkStream net, string serverMessage) {
             var stream = new MemoryStream();
@@ -558,16 +602,144 @@ namespace MCMTRS.Protocal578 {
             Console.WriteLine("Disconnected {0} for Reason: {1}", username, reason);
         }
 
+        private void PlayChunkData(NetworkStream net, int x, int y) {
+            var stream = new MemoryStream();
+            stream.Write(BitConverter.GetBytes(x));
+            stream.Write(BitConverter.GetBytes(y));
+            stream.WriteByte(0x01); //Full Chunk
+            stream.Write(VariableNumbers.CreateVarInt(0)); //Bitmask for every 16×16×16 chunk section whose data is included in Data.
+            var nbt = new NbtWriter(stream, "");
+            nbt.WriteTag(new NbtLongArray("MOTION_BLOCKING", Enumerable.Repeat(0L, 1024).ToArray()));
+            nbt.EndCompound();
+            nbt.Finish();
+            stream.Write(Enumerable.Repeat(127, 1024).SelectMany(BitConverter.GetBytes).ToArray()); //Set All Biomes to 'The Void'
+            stream.Write(VariableNumbers.CreateVarInt(0)); //Size of Data in bytes
+            stream.Write(VariableNumbers.CreateVarInt(0)); //Number of block entities
+            var packet = new UCPacket(0x22, stream.ToArray());
+            WritePacket(net, packet);
+        }
+
+        private void PlayJoinGame(NetworkStream net) {
+            var stream = new MemoryStream();
+            stream.Write(BitConverter.GetBytes(GetNextEntityID()));
+            stream.WriteByte((byte)((int)Enum.Parse(typeof(Gamemode), Pool.Instance.properties.GetProperty("gamemode").GetString(), true)
+                & (Pool.Instance.properties.GetProperty("hardcore").GetBoolean() ? 0x4 : 0x0)));
+            stream.Write(BitConverter.GetBytes((int)Dimension.Overworld));
+            stream.Write(Pool.Instance.seedHash.AsSpan().Slice(0, 8));
+            stream.WriteByte(20); //Unused by Client and actual max players MAY be over 255
+            var levelType = Encoding.UTF8.GetBytes(Pool.Instance.properties.GetProperty("level-type").GetString());
+            stream.Write(VariableNumbers.CreateVarInt(levelType.Length));
+            stream.Write(levelType);
+            stream.Write(VariableNumbers.CreateVarInt(Pool.Instance.properties.GetProperty("view-distance").GetInt32()));
+            stream.Write(new byte[2] { 0x01, 0x01 }); //Reduced Debug Info Enabled & doImmediateRespawn False cause no GameRules yet
+            var packet = new UCPacket(0x26, stream.ToArray());
+            WritePacket(net, packet);
+        }
+
+        private void PlayPlayerInfo(NetworkStream net, PlayerInfoData data) {
+            
+            //Do shit
+            var stream = new MemoryStream();
+            stream.Write(VariableNumbers.CreateVarInt((int)data.action));
+            stream.Write(VariableNumbers.CreateVarInt(data.players.Length));
+            foreach(var player in data.players) {
+                var uuidBytes = Encoding.UTF8.GetBytes(player.uuid);
+                stream.Write(VariableNumbers.CreateVarInt(uuidBytes.Length));
+                stream.Write(uuidBytes);
+                switch(data.action) {
+                    case PlayerInfoData.Action.AddPlayer:
+                        stream.Write(Encoding.UTF8.GetBytes(player.name));
+                        stream.Write(VariableNumbers.CreateVarInt(player.properties.Length));
+                        foreach(var property in player.properties) {
+                            var tempBytes = Encoding.UTF8.GetBytes(property.name);
+                            stream.Write(VariableNumbers.CreateVarInt(tempBytes.Length));
+                            stream.Write(tempBytes);
+                            tempBytes = Encoding.UTF8.GetBytes(property.value);
+                            stream.Write(VariableNumbers.CreateVarInt(tempBytes.Length));
+                            stream.Write(tempBytes);
+                            stream.WriteByte((byte)(property.isSigned ? 0x01 : 0x00));
+                            if(property.isSigned) {
+                                tempBytes = Encoding.UTF8.GetBytes(property.signature);
+                                stream.Write(VariableNumbers.CreateVarInt(tempBytes.Length));
+                                stream.Write(tempBytes);
+                            }
+                        }
+                        stream.Write(VariableNumbers.CreateVarInt((int)player.gamemode));
+                        stream.Write(VariableNumbers.CreateVarInt(player.ping));
+                        stream.WriteByte((byte)(player.hasDisplayName ? 0x01 : 0x00));
+                        if(player.hasDisplayName)
+                            stream.Write(player.displayName);
+                        break;
+                    case PlayerInfoData.Action.UpdateGamemode:
+                        stream.Write(VariableNumbers.CreateVarInt((int)player.gamemode));
+                        break;
+                    case PlayerInfoData.Action.UpdateLatency:
+                        stream.Write(VariableNumbers.CreateVarInt(player.ping));
+                        break;
+                    case PlayerInfoData.Action.UpdateDisplayName:
+                        stream.WriteByte((byte)(player.hasDisplayName ? 0x01 : 0x00));
+                        if(player.hasDisplayName)
+                            stream.Write(player.displayName);
+                        break;
+                }
+            }
+            WritePacket(net, new UCPacket(0x34, stream.ToArray()));
+        }
+
+        private void PlayPlayerPositionAndLookClient(NetworkStream net) {
+            var stream = new MemoryStream();
+            stream.Write(BitConverter.GetBytes(0.0));
+            stream.Write(BitConverter.GetBytes(0.0));
+            stream.Write(BitConverter.GetBytes(0.0));
+            stream.Write(BitConverter.GetBytes(0.0f));
+            stream.Write(BitConverter.GetBytes(0.0f));
+            stream.WriteByte(0);
+            next = new Random().Next(int.MinValue, int.MaxValue);
+            stream.Write(VariableNumbers.CreateVarInt(next));
+            WritePacket(net, new UCPacket(0x36, stream.ToArray()));
+        }
+
+        private void PlayHeldItemChange(NetworkStream net, byte slot) {
+            WritePacket(net, new UCPacket(0x40, new byte[] { slot }));
+        }
+
+        private void PlaySpawnPosition(NetworkStream net) {
+            ulong pos = 0L; //((x & 0x3FFFFFF) << 38) | ((z & 0x3FFFFFF) << 12) | (y & 0xFFF)
+            WritePacket(net, new UCPacket(0x4E, new byte[8]));
+        }
+
+        private void PlayDeclareRecipes(NetworkStream net) {
+            var stream = new MemoryStream();
+            stream.Write(VariableNumbers.CreateVarInt(0));
+            //TODO
+            WritePacket(net, new UCPacket(0x5B, stream.ToArray()));
+        }
+
+        private void PlayTags(NetworkStream net) {
+            var stream = new MemoryStream();
+            stream.Write(VariableNumbers.CreateVarInt(0));
+            stream.Write(VariableNumbers.CreateVarInt(0));
+            stream.Write(VariableNumbers.CreateVarInt(0));
+            stream.Write(VariableNumbers.CreateVarInt(0));
+            //TODO
+            WritePacket(net, new UCPacket(0x5B, stream.ToArray()));
+        }
+
         #endregion
 
         #region Serverbound
+
+        private void PlayTeleportConfirm(NetworkStream net, UCPacket packet) {
+            if(VariableNumbers.ReadVarInt(packet.reader).Item1 != next)
+                PlayDisconnect(net, "Teleport Confirm Failed");
+            next = 0;
+        }
 
         private void PlayPluginMessageServer(NetworkStream net, UCPacket packet) {
             var identifier = VariableNumbers.ReadVarInt(packet.reader);
             string channel = Encoding.UTF8.GetString(packet.reader.ReadBytes(identifier.Item1));
             string data = Encoding.UTF8.GetString(packet.reader.ReadBytes(packet.data.Length - identifier.Item2));
-            Console.WriteLine(channel + ":" + data);
-            //TODO: Implement all the important messages
+            //Ignore The Messages
         }
 
         #endregion
@@ -633,6 +805,24 @@ namespace MCMTRS.Protocal578 {
             temp1[6] = ((byte)((temp1[6] & 0x0F) | 0x30));
             temp1[8] = ((byte)((temp1[8] & 0x3f) | 0x80));
             return MinecraftShaDigest(temp1);
+        }
+
+        private JsonElement GetJsonFromURL(NetworkStream net, string url, bool timeout) {
+            var request = new WebClient();
+            request.Headers.Add("User-Agent", "Mozilla/4.0 (compatible; MSIE 8.0)");
+            Task<string> response = request.DownloadStringTaskAsync(url);
+            response.Wait(25000);
+            JsonElement json = JsonDocument.Parse("{\n\t\"id\": \"\",\n\t\"name\": \"\",\n\t\"properties\": [\n\t\t{\n\t\t}\n\t]\n}", new JsonDocumentOptions { AllowTrailingCommas = true }).RootElement;
+            if(response.IsCompleted)
+                using(StreamReader sr = new StreamReader(new MemoryStream(Encoding.UTF8.GetBytes(response.Result)), Encoding.UTF8))
+                    json = JsonDocument.Parse(sr.ReadToEnd(), new JsonDocumentOptions { AllowTrailingCommas = true }).RootElement;
+            else if(timeout) {
+                if(currentState.Equals(State.Login))
+                    LoginDisconnect(net, "Timed out");
+                if(currentState.Equals(State.Play))
+                    PlayDisconnect(net, "Timed out");
+            }
+            return json;
         }
 
         #endregion

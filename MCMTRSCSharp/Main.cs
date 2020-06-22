@@ -45,6 +45,7 @@ namespace MCMTRS {
         public Server(string[] args) {
             //Server Init
             ConsoleErrorWriterDecorator.SetToConsole();
+            ConsoleOutWriter.SetToConsole();
             running = true;
             propertiesPath = Directory.GetCurrentDirectory() + "\\server.properties";
             if(!File.Exists(propertiesPath))
@@ -131,6 +132,38 @@ namespace MCMTRS {
         }
     }
 
+    public class ConsoleOutWriter : TextWriter {
+        private TextWriter m_OriginalConsoleStream;
+
+        public ConsoleOutWriter(TextWriter consoleTextWriter) {
+            m_OriginalConsoleStream = consoleTextWriter;
+        }
+
+        public override void WriteLine(string value) {
+            ConsoleColor originalColor = Console.ForegroundColor;
+            Console.ForegroundColor = ConsoleColor.Green;
+            m_OriginalConsoleStream.Write("[{0}] ", DateTime.Now.ToString());
+            Console.ForegroundColor = originalColor;
+            m_OriginalConsoleStream.WriteLine(value);
+        }
+
+        public override void Write(string value) {
+            ConsoleColor originalColor = Console.ForegroundColor;
+            Console.ForegroundColor = originalColor;
+            m_OriginalConsoleStream.Write(value);
+        }
+
+        public override Encoding Encoding {
+            get {
+                return Encoding.Default;
+            }
+        }
+
+        public static void SetToConsole() {
+            Console.SetOut(new ConsoleOutWriter(Console.Out));
+        }
+    }
+
     public class ConsoleErrorWriterDecorator : TextWriter {
         private TextWriter m_OriginalConsoleStream;
 
@@ -141,9 +174,7 @@ namespace MCMTRS {
         public override void WriteLine(string value) {
             ConsoleColor originalColor = Console.ForegroundColor;
             Console.ForegroundColor = ConsoleColor.Red;
-
-            m_OriginalConsoleStream.WriteLine(value);
-
+            m_OriginalConsoleStream.Write("[{0}] {1}", DateTime.Now.ToString(), value);
             Console.ForegroundColor = originalColor;
         }
 
