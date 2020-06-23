@@ -1,11 +1,13 @@
 ﻿using fNbt;
 using fNbt.Tags;
 using System;
+using System.Data.SqlTypes;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -53,15 +55,15 @@ namespace MCMTRS.Protocal578 {
         }
 
         public static byte[] CreateVarInt(int value) {
+            uint shift = (uint)value;
             var stream = new MemoryStream();
             do {
-                byte temp = (byte)(value & 0b01111111);
-                value = (int)((uint)value >> 7);
-                if(value != 0)
+                byte temp = (byte)(shift & 0b01111111);
+                shift >>= 7;
+                if(shift != 0)
                     temp |= 0b10000000;
                 stream.WriteByte(temp);
-            } while(value != 0);
-            Console.WriteLine();
+            } while(shift != 0);
             return stream.ToArray();
         }
 
@@ -167,9 +169,147 @@ namespace MCMTRS.Protocal578 {
         }
     }
 
-    struct Entity {
-        public int ID;
+    public struct Vector3d {
+        public double X, Y, Z;
+        public Vector3d(double x, double y, double z) {
+            X = x;
+            Y = y;
+            Z = z;
+        }
     }
+
+    #region Entity
+
+    interface IEntity {
+        int ID {
+            get;
+            set;
+        }
+        double X {
+            get;
+            set;
+        }
+        double Y {
+            get;
+            set;
+        }
+        double Z {
+            get;
+            set;
+        }
+        float rotX {
+            get;
+            set;
+        }
+        float rotY {
+            get;
+            set;
+        }
+        bool onFire {
+            get;
+            set;
+        }
+    }
+
+    public struct Player : IEntity {
+        public int ID {
+            get;
+            set;
+        }
+        public double X {
+            get;
+            set;
+        }
+        public double Y {
+            get;
+            set;
+        }
+        public double Z {
+            get;
+            set;
+        }
+        public float rotX {
+            get;
+            set;
+        }
+        public float rotY {
+            get;
+            set;
+        }
+        public bool onFire {
+            get;
+            set;
+        }
+
+        public string uuid;
+        public string name;
+        public struct Property {
+            public string name;
+            public string value;
+            public bool isSigned;
+            public string signature;
+            public Property(string _name, string _value, string _signature = null) {
+                name = _name;
+                value = _value;
+                signature = _signature;
+                isSigned = signature != null;
+            }
+        }
+        public Property[] properties;
+        public Gamemode gamemode;
+        public int ping;
+        public bool hasDisplayName;
+        public byte[] displayName;
+        public bool isConnected;
+
+        public Player(int ID, Vector3d XYZ, Vector2 rot, string _uuid) {
+            //General Entity Init
+            this.ID = ID;
+            X = XYZ.X;
+            Y = XYZ.Y;
+            Z = XYZ.Z;
+            rotX = rot.X;
+            rotY = rot.Y;
+            onFire = false;
+            //Player Specific Init
+            uuid = _uuid;
+            name = null;
+            properties = null;
+            gamemode = 0;
+            ping = 0;
+            hasDisplayName = false;
+            displayName = null;
+            isConnected = true;
+        }
+
+        public Player SetName(string name) {
+            this.name = name;
+            return this;
+        }
+
+        public Player SetProperties(Property[] properties) {
+            this.properties = properties;
+            return this;
+        }
+
+        public Player SetGamemode(Gamemode gamemode) {
+            this.gamemode = gamemode;
+            return this;
+        }
+
+        public Player SetPing(int ping) {
+            this.ping = ping;
+            return this;
+        }
+
+        public Player SetDisplayName(bool hasDisplayName, byte[] displayName = null) {
+            this.hasDisplayName = hasDisplayName;
+            this.displayName = displayName;
+            return this;
+        }
+    }
+
+    #endregion
 
     enum State {
         Handshaking = 0,
@@ -191,37 +331,6 @@ namespace MCMTRS.Protocal578 {
         Nether = -1,
         Overworld,
         End
-    }
-
-    public struct Player {
-        public string uuid;
-        public string name;
-        public struct Property {
-            public string name;
-            public string value;
-            public bool isSigned;
-            public string signature;
-            public Property(string _name, string _value, string _signature = null) {
-                name = _name;
-                value = _value;
-                signature = _signature;
-                isSigned = signature != null;
-            }
-        }
-        public Property[] properties;
-        public Gamemode gamemode;
-        public int ping;
-        public bool hasDisplayName;
-        public byte[] displayName;
-        public Player(string _uuid, string _name, Property[] _properties, Gamemode _gamemode, int _ping, byte[] _displayName = null) {
-            uuid = _uuid;
-            name = _name;
-            properties = _properties;
-            gamemode = _gamemode;
-            ping = _ping;
-            displayName = _displayName;
-            hasDisplayName = displayName != null;
-        }
     }
 
     public struct PlayerInfoData {
@@ -259,7 +368,7 @@ namespace MCMTRS.Protocal578 {
         protected ICryptoTransform enc, dec;
         protected byte[] verify, publicKey;
         protected JsonElement profileSkin;
-        protected Player player;
+        protected Player? player;
         protected int next;
 
         #endregion
@@ -295,10 +404,15 @@ namespace MCMTRS.Protocal578 {
         }
 
         private bool IsConnected(TcpClient user) {
-            return !currentState.Equals(State.Disconnect) && user.Connected;
+            if(player.HasValue)
+                return !currentState.Equals(State.Disconnect) && user.Connected && player.Value.isConnected;
+            else
+                return !currentState.Equals(State.Disconnect) && user.Connected;
         }
 
         public void Close() {
+            if(currentState.Equals(State.Play))
+                Pool.Instance.players.Remove(player.Value.ID);
             currentState = State.Disconnect;
         }
 
@@ -477,7 +591,8 @@ namespace MCMTRS.Protocal578 {
             WritePacket(net, packet);
             currentState = State.Play;
             Console.WriteLine("Player {0} has Joined.", username);
-            Pool.Instance.players.Add(this);
+            player = new Player(GetNextEntityID(), new Vector3d(0, 0, 0), new Vector2(0, 0), uuid);
+            Pool.Instance.players.Add(player.Value.ID);
             PlayStart(net);
         }
 
@@ -561,17 +676,6 @@ namespace MCMTRS.Protocal578 {
             PlayChunkData(net, -1, 0);
             PlayChunkData(net, 0, -1);
             PlayChunkData(net, -1, -1);
-            //if(profileSkin.Equals(new JsonElement()))
-            //    profileSkin = GetJsonFromURL(net, string.Format("https://sessionserver.mojang.com/session/minecraft/profile/{0}?unsigned=false", uuid), false);
-            //var skinBlob = profileSkin.GetProperty("properties").EnumerateArray().First();
-            //if(skinBlob.TryGetProperty("name", out _)) {
-            //    PlayPlayerInfo(net, new PlayerInfoData(PlayerInfoData.Action.AddPlayer, new Player[] { new Player(uuid, username,
-            //    new Player.Property[] { new Player.Property(skinBlob.GetProperty("name").GetString(), skinBlob.GetProperty("value").GetString(),
-            //    skinBlob.GetProperty("signature").GetString()) }, (Gamemode)Enum.Parse(typeof(Gamemode), Pool.Instance.properties.GetProperty("gamemode").GetString()
-            //    ,true), 10) }));
-            //} else
-            //    PlayPlayerInfo(net, new PlayerInfoData(PlayerInfoData.Action.AddPlayer, new Player[] { new Player(uuid, username,
-            //    new Player.Property[] { }, (Gamemode)Enum.Parse(typeof(Gamemode), Pool.Instance.properties.GetProperty("gamemode").GetString(), true), 10) }));
         }
 
         #region Clientbound

@@ -8,14 +8,15 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
+using System.Threading.Tasks;
 using MCMTRS.Protocal578;
 
 namespace MCMTRS {
     sealed class Pool {
         private static readonly Lazy<Pool> lazy = new Lazy<Pool>(() => new Pool());
 
-        public List<Client> players;
-        public List<Entity> entities;
+        public List<int> players;
+        public List<IEntity> entities;
         public byte[] seedHash;
         public int clients;
         public JsonElement properties;
@@ -28,8 +29,8 @@ namespace MCMTRS {
 
         private Pool() {
             clients = 0;
-            players = new List<Client>();
-            entities = new List<Entity>();
+            players = new List<int>();
+            entities = new List<IEntity>();
         }
     }
 
@@ -68,8 +69,6 @@ namespace MCMTRS {
                         Pool.Instance.clients++;
                         client.Start(clt);
                         Pool.Instance.clients--;
-                        if(Pool.Instance.players.Contains(client))
-                            Pool.Instance.players.Remove(client);
                     });
                 } else {
                     Thread.Sleep(100);
@@ -78,6 +77,13 @@ namespace MCMTRS {
 
             //Clean Up
             listener.Stop();
+        }
+
+        public void CloseAll() {
+            running = false;
+            Pool.Instance.entities.FindAll(e => Pool.Instance.players.Contains(e.ID)).ForEach(e => {
+                var player = (Player)e; player.isConnected = false;
+            });
         }
 
         public void CreatePropertiesFile(string path) {
