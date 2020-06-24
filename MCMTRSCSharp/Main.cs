@@ -8,7 +8,6 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
-using System.Threading.Tasks;
 using MCMTRS.Protocal578;
 
 namespace MCMTRS {
@@ -18,7 +17,7 @@ namespace MCMTRS {
         public List<int> players;
         public List<IEntity> entities;
         public byte[] seedHash;
-        public int clients;
+        public List<Client> clients;
         public JsonElement properties;
 
         public static Pool Instance {
@@ -28,7 +27,7 @@ namespace MCMTRS {
         }
 
         private Pool() {
-            clients = 0;
+            clients = new List<Client>();
             players = new List<int>();
             entities = new List<IEntity>();
         }
@@ -66,9 +65,11 @@ namespace MCMTRS {
                     ThreadPool.QueueUserWorkItem((object state) => {
                         TcpClient clt = listener.AcceptTcpClient();
                         Client client = new Client();
-                        Pool.Instance.clients++;
+                        int clientID = client.clientID;
+                        Pool.Instance.clients.Add(client);
                         client.Start(clt);
-                        Pool.Instance.clients--;
+                        Pool.Instance.clients.RemoveAt(Pool.Instance.clients.FindIndex(c => c.clientID == clientID));
+
                     });
                 } else {
                     Thread.Sleep(100);

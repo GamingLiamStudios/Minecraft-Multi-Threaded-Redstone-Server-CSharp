@@ -1,13 +1,11 @@
 ﻿using fNbt;
 using fNbt.Tags;
 using System;
-using System.Data.SqlTypes;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Numerics;
-using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -16,7 +14,7 @@ using System.Threading.Tasks;
 namespace MCMTRS.Protocal578 {
 
     /*
-     * Designed for Minecraft Version 1.15.2, Protocal 578
+     * Designed for Minecraft Version 1.15.2, Protocal 578 as specified by wiki.vg
      */
 
     #region DataTypes
@@ -360,6 +358,7 @@ namespace MCMTRS.Protocal578 {
 
         #region Variables
 
+        public int clientID;
         protected string username, uuid, socketIp;
         protected bool compression, encrypted;
         protected State currentState;
@@ -377,6 +376,7 @@ namespace MCMTRS.Protocal578 {
 
         public Client() {
             rsa = new RSACryptoServiceProvider(1024);
+            clientID = new Random().Next();
             compression = false;
             encrypted = false;
             currentState = State.Handshaking;
@@ -592,7 +592,7 @@ namespace MCMTRS.Protocal578 {
             currentState = State.Play;
             Console.WriteLine("Player {0} has Joined.", username);
             player = new Player(GetNextEntityID(), new Vector3d(0, 0, 0), new Vector2(0, 0), uuid);
-            Pool.Instance.players.Add(player.Value.ID);
+            Pool.Instance.players.Add(clientID);
             PlayStart(net);
         }
 
