@@ -1,6 +1,8 @@
 ﻿using fNbt;
 using fNbt.Tags;
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -9,6 +11,7 @@ using System.Numerics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace MCMTRS.Protocal578 {
@@ -128,24 +131,6 @@ namespace MCMTRS.Protocal578 {
                     throw new EndOfStreamException("Unable to Load VarInt");
             }
             reader = new BinaryReader(new MemoryStream(data));
-            Console.WriteLine("Recieved Packet: Length: {0}, ID: {1}, Data: {2}", length,
-                new BigInteger(pktID.Item1).ToString("x").PadLeft(2, '0'), new BigInteger(data).ToString("x") + " | "
-                + Encoding.UTF8.GetString(data));
-        }
-        public UCPacket(BinaryReader stream) {
-            length = VariableNumbers.ReadVarInt(stream).Item1;
-            if(length == -1)
-                throw new EndOfStreamException("Unable to Load VarInt");
-            pktID = VariableNumbers.ReadVarInt(stream);
-            if(pktID.Item2 == 0)
-                throw new EndOfStreamException("Unable to Load VarInt");
-            data = new byte[length - pktID.Item2];
-            if(stream.Read(data) != data.Length)
-                throw new EndOfStreamException("Unable to Load VarInt");
-            reader = new BinaryReader(new MemoryStream(data));
-            Console.WriteLine("Recieved Packet: Length: {0}, ID: {1}, Data: {2}", length,
-                new BigInteger(pktID.Item1).ToString("x").PadLeft(2, '0'), new BigInteger(data).ToString("x") + " | "
-                + Encoding.UTF8.GetString(data));
         }
         public UCPacket(int _pktID, byte[] _data) {
             data = _data;
@@ -162,7 +147,6 @@ namespace MCMTRS.Protocal578 {
             stream.SetLength(0);
             stream.Write(VariableNumbers.CreateVarInt(pktData.Length));
             stream.Write(pktData);
-            Console.WriteLine("Sending Packet With ID: " + pktID.Item1);
             return stream.ToArray();
         }
     }
@@ -343,11 +327,160 @@ namespace MCMTRS.Protocal578 {
 
     #endregion
 
+    sealed class Pool {
+        private static readonly Lazy<Pool> lazy = new Lazy<Pool>(() => new Pool());
+
+        public List<int> players;
+        public List<IEntity> entities;
+        public byte[] seedHash;
+        public List<Client> clients;
+        public JsonElement properties;
+
+        public static Pool Instance {
+            get {
+                return lazy.Value;
+            }
+        }
+
+        private Pool() {
+            clients = new List<Client>();
+            players = new List<int>();
+            entities = new List<IEntity>();
+        }
+    }
+
+    class Server {
+        TcpListener listener;
+        bool running;
+        string propertiesPath;
+
+        public Server(string[] args) {
+            //Server Init
+            ConsoleErrorWriterDecorator.SetToConsole(); //Logging
+            ConsoleOutWriter.SetToConsole(); //Logging
+            running = true;
+            long nspt = 1000000000 / Stopwatch.Frequency;
+            propertiesPath = Directory.GetCurrentDirectory() + "\\server.properties";
+            if(!File.Exists(propertiesPath))
+                CreatePropertiesFile(propertiesPath);
+            ReadPropertiesFile(propertiesPath);
+            var ip = Pool.Instance.properties.GetProperty("server-ip").GetString();
+            listener = new TcpListener(ip != "" ? IPAddress.Parse(ip) : IPAddress.Any, Pool.Instance.properties.GetProperty("server-port")
+                .GetInt32());
+            Pool.Instance.seedHash = SHA256.Create().ComputeHash(BitConverter.GetBytes(Pool.Instance.properties.GetProperty("level-seed")
+                .GetInt64()));
+
+            //Listen For Clients
+            Console.WriteLine("Server Started");
+            listener.Start();
+            Stopwatch time = Stopwatch.StartNew();
+            long lastTime = time.ElapsedTicks * nspt;
+            double ammountOfTicks = 20.0;
+            double ns = 1000000000.0 / ammountOfTicks;
+            double delta = 0;
+            while(running) {
+                long now = time.ElapsedTicks * nspt;
+                delta += (now - lastTime) / ns;
+                lastTime = now;
+                while(delta >= 1) {
+                    if(Pool.Instance.clients.Count != 0)
+                        foreach(Client c in Pool.Instance.clients)
+                            if(c.canTick)
+                                c.Tick();
+                    delta--;
+                }
+                if(running && listener.Pending()) {
+                    ThreadPool.QueueUserWorkItem((object state) => {
+                        TcpClient clt = listener.AcceptTcpClient();
+                        Client client = new Client();
+                        int clientID = client.clientID;
+                        Pool.Instance.clients.Add(client);
+                        client.Start(clt);
+                        Pool.Instance.clients.RemoveAt(Pool.Instance.clients.FindIndex(c => c.clientID == clientID));
+                    });
+                }
+            }
+
+            //Clean Up
+            CloseAll();
+            listener.Stop();
+        }
+
+        public void CloseAll() {
+            running = false;
+            Pool.Instance.entities.FindAll(e => Pool.Instance.players.Contains(e.ID)).ForEach(e => {
+                var player = (Player)e;
+                player.isConnected = false;
+            });
+        }
+
+        #region Properties
+
+        public void CreatePropertiesFile(string path) {
+            var seed = new byte[8];
+            new Random().NextBytes(seed);
+            StreamWriter writer = File.CreateText(path);
+            writer.WriteLine("#Minecraft server properties");
+            writer.WriteLine("#({0})", DateTime.Now.ToString());
+            writer.Write("spawn-protection=16\nmax-tick-time=60000\nquery.port=25565\ngenerator-settings=\nsync-chunk-writes=true" +
+                "\nforce-gamemode=false\nallow-nether=true\nenforce-whitelist=false\ngamemode=survival\nbroadcast-console-to-ops=true" +
+                "\nenable-query=false\nplayer-idle-timeout=0\ndifficulty=easy\nbroadcast-rcon-to-ops=true\nspawn-monsters=true" +
+                "\nop-permission-level=4\npvp=true\nsnooper-enabled=true\nlevel-type=default\nhardcore=false" +
+                "\nenable-command-block=false\nnetwork-compression-threshold=256\nmax-players=20\nmax-world-size=29999984" +
+                "\nresource-pack-sha1=\nfunction-permission-level=2\nrcon.port=25575\nserver-port=25565\nserver-ip=\nspawn-npcs=true" +
+                "\nallow-flight=false\nlevel-name=world\nview-distance=10\nresource-pack=\nspawn-animals=true\nwhite-list=false" +
+                "\nrcon.password=\ngenerate-structures=true\nonline-mode=true\nmax-build-height=256\nlevel-seed=" +
+                 BitConverter.ToInt64(seed) + "\nprevent-proxy-connections=false\nuse-native-transport=true" +
+                "\nmotd=A Minecraft Server\nenable-rcon=false");
+            writer.Flush();
+            writer.Close();
+            writer.Dispose();
+        }
+
+        public void ReadPropertiesFile(string path) {
+            StreamReader reader = File.OpenText(path);
+            var options = new JsonWriterOptions {
+                Indented = true
+            };
+            var stream = new MemoryStream();
+            using(var writer = new Utf8JsonWriter(stream, options)) {
+                writer.WriteStartObject();
+                string line;
+                while((line = reader.ReadLine()) != null) {
+                    if(!line.StartsWith("#")) {
+                        var split = line.Split("=");
+                        if(split[1] == "")
+                            writer.WriteString(split[0], split[1]);
+                        else if(char.IsDigit(split[1].First()))
+                            writer.WriteNumber(split[0], long.Parse(split[1]));
+                        else if(split[1].Equals("true") || split[1].Equals("false"))
+                            writer.WriteBoolean(split[0], split[1].Equals("true"));
+                        else
+                            writer.WriteString(split[0], split[1]);
+                    }
+                }
+                writer.WriteEndObject();
+            }
+            Pool.Instance.properties = JsonDocument.Parse(Encoding.UTF8.GetString(stream.ToArray())).RootElement;
+            stream.Close();
+            reader.Close();
+            reader.Dispose();
+        }
+
+        #endregion
+
+        #region World
+
+
+
+        #endregion
+    }
+
     class Client {
 
         /* TODO For Everything thats not Play
          * Replace Encryption Libs
-         * Make Everything Async
+         * Read World Files
          * 
          * Handshake: Wrong Version Error Message at Client
          * Legacy Server List Ping: Implement Server List Ping
@@ -359,8 +492,9 @@ namespace MCMTRS.Protocal578 {
         #region Variables
 
         public int clientID;
+        public bool canTick;
         protected string username, uuid, socketIp;
-        protected bool compression, encrypted;
+        protected bool compression, encrypted, stdout;
         protected State currentState;
         protected RSACryptoServiceProvider rsa; //TODO
         protected AesManaged aes; //TODO
@@ -368,32 +502,45 @@ namespace MCMTRS.Protocal578 {
         protected byte[] verify, publicKey;
         protected JsonElement profileSkin;
         protected Player? player;
-        protected int next;
+        protected long next, tickCount;
+        protected NetworkStream net;
+        protected TcpClient user;
+        protected Stopwatch latency;
+        protected readonly int[] dontLogIN, dontLogOUT;
 
         #endregion
 
         #region Main
 
         public Client() {
+            dontLogIN = new int[] { 0x0F };
+            dontLogOUT = new int[] { 0x21 };
             rsa = new RSACryptoServiceProvider(1024);
             clientID = new Random().Next();
             compression = false;
             encrypted = false;
+            canTick = false;
+            stdout = true;
             currentState = State.Handshaking;
+            latency = new Stopwatch();
         }
 
-        public void Start(TcpClient user) {
-            if(user == null)
+        public void Start(TcpClient _user) {
+            if(_user == null)
                 return;
+            user = _user;
             socketIp = user.Client.RemoteEndPoint.ToString();
-            NetworkStream net = user.GetStream();
+            net = user.GetStream();
             net.ReadTimeout = 30000;
-            //TODO: Improve this
+            tickCount = 0;
             while(IsConnected(user)) {
                 while(!net.DataAvailable && IsConnected(user))
-                    ; //Waits for next Packet unless Disconnected
+                    ;
                 HandlePacket(net);
             }
+        }
+
+        public void Dispose() {
             Close();
             rsa.Dispose();
             net.Close();
@@ -416,9 +563,29 @@ namespace MCMTRS.Protocal578 {
             currentState = State.Disconnect;
         }
 
+        public void Tick() {
+            if(!IsConnected(user)) {
+                Dispose();
+                return;
+            }
+            if(tickCount % 20 == 0)
+                PlayKeepAliveClient(net);
+            tickCount++;
+        }
+
         public void HandlePacket(NetworkStream net) {
             UCPacket packet;
-            try { packet = new UCPacket(net); } catch(EndOfStreamException e) { Close(); return; } //Timeout Detection
+            try { 
+                packet = new UCPacket(net);
+                if(stdout && !dontLogIN.Contains(packet.pktID.Item1))
+                    Console.WriteLine("Recieved Packet: Length: {0}, ID: {1}, Data: {2}", packet.length,
+                        new BigInteger(packet.pktID.Item1).ToString("x").PadLeft(2, '0'), new BigInteger(packet.data).ToString("x") + " | "
+                        + Encoding.UTF8.GetString(packet.data));
+                if(player.HasValue) {
+                    latency.Stop();
+                    player.Value.SetPing((int)latency.ElapsedMilliseconds); 
+                } 
+            } catch(EndOfStreamException) { Close(); return; } //Timeout Detection
             switch(currentState) {
                 case State.Handshaking:
                     HandleHandshakingPackets(net, packet);
@@ -664,6 +831,9 @@ namespace MCMTRS.Protocal578 {
                 case 0x0B://Plugin Message (serverbound)
                     PlayPluginMessageServer(net, packet);
                     break;
+                case 0x0F:
+                    PlayKeepAliveServer(net, packet);
+                    break;
             }
         }
 
@@ -672,10 +842,7 @@ namespace MCMTRS.Protocal578 {
             PlayPluginMessageClient(net, "minecraft:brand");
             PlaySpawnPosition(net);
             PlayPlayerPositionAndLookClient(net);
-            PlayChunkData(net, 0, 0);
-            PlayChunkData(net, -1, 0);
-            PlayChunkData(net, 0, -1);
-            PlayChunkData(net, -1, -1);
+            canTick = true;
         }
 
         #region Clientbound
@@ -704,6 +871,14 @@ namespace MCMTRS.Protocal578 {
             }
             WriteMessageClose(net, 0x1B, stream.ToArray());
             Console.WriteLine("Disconnected {0} for Reason: {1}", username, reason);
+        }
+
+        private void PlayKeepAliveClient(NetworkStream net) {
+            while(next != 0)
+                ;
+            next = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            latency.Restart();
+            WritePacket(net, new UCPacket(0x21, BitConverter.GetBytes(next)));
         }
 
         private void PlayChunkData(NetworkStream net, int x, int y) {
@@ -741,7 +916,6 @@ namespace MCMTRS.Protocal578 {
         }
 
         private void PlayPlayerInfo(NetworkStream net, PlayerInfoData data) {
-            
             //Do shit
             var stream = new MemoryStream();
             stream.Write(VariableNumbers.CreateVarInt((int)data.action));
@@ -799,7 +973,7 @@ namespace MCMTRS.Protocal578 {
             stream.Write(BitConverter.GetBytes(0.0f));
             stream.WriteByte(0);
             next = new Random().Next(int.MinValue, int.MaxValue);
-            stream.Write(VariableNumbers.CreateVarInt(next));
+            stream.Write(VariableNumbers.CreateVarInt((int)next));
             WritePacket(net, new UCPacket(0x36, stream.ToArray()));
         }
 
@@ -809,7 +983,7 @@ namespace MCMTRS.Protocal578 {
 
         private void PlaySpawnPosition(NetworkStream net) {
             ulong pos = 0L; //((x & 0x3FFFFFF) << 38) | ((z & 0x3FFFFFF) << 12) | (y & 0xFFF)
-            WritePacket(net, new UCPacket(0x4E, new byte[8]));
+            WritePacket(net, new UCPacket(0x4E, BitConverter.GetBytes(pos)));
         }
 
         private void PlayDeclareRecipes(NetworkStream net) {
@@ -834,7 +1008,7 @@ namespace MCMTRS.Protocal578 {
         #region Serverbound
 
         private void PlayTeleportConfirm(NetworkStream net, UCPacket packet) {
-            if(VariableNumbers.ReadVarInt(packet.reader).Item1 != next)
+            if(VariableNumbers.ReadVarInt(packet.reader).Item1 != (int)next)
                 PlayDisconnect(net, "Teleport Confirm Failed");
             next = 0;
         }
@@ -844,6 +1018,12 @@ namespace MCMTRS.Protocal578 {
             string channel = Encoding.UTF8.GetString(packet.reader.ReadBytes(identifier.Item1));
             string data = Encoding.UTF8.GetString(packet.reader.ReadBytes(packet.data.Length - identifier.Item2));
             //Ignore The Messages
+        }
+
+        private void PlayKeepAliveServer(NetworkStream net, UCPacket packet) {
+            if(BitConverter.ToInt64(packet.data) != next)
+                PlayDisconnect(net, "Keep Alive Failed");
+            next = 0;
         }
 
         #endregion
@@ -868,6 +1048,8 @@ namespace MCMTRS.Protocal578 {
         }
 
         public void WritePacket(NetworkStream net, UCPacket packet) {
+            if(stdout && !dontLogOUT.Contains(packet.pktID.Item1))
+                Console.WriteLine("Sending Packet With ID: " + new BigInteger(packet.pktID.Item1).ToString("x").PadLeft(2, '0'));
             if(encrypted)
                 net.Write(Encrypt(packet.WritePacket()));
             else
@@ -932,4 +1114,66 @@ namespace MCMTRS.Protocal578 {
         #endregion
     
     }
+
+    #region Logging
+
+    public class ConsoleOutWriter : TextWriter {
+        private TextWriter m_OriginalConsoleStream;
+
+        public ConsoleOutWriter(TextWriter consoleTextWriter) {
+            m_OriginalConsoleStream = consoleTextWriter;
+        }
+
+        public override void WriteLine(string value) {
+            ConsoleColor originalColor = Console.ForegroundColor;
+            Console.ForegroundColor = ConsoleColor.Green;
+            m_OriginalConsoleStream.Write("[{0}] ", DateTime.Now.ToString());
+            Console.ForegroundColor = originalColor;
+            m_OriginalConsoleStream.WriteLine(value);
+        }
+
+        public override void Write(string value) {
+            ConsoleColor originalColor = Console.ForegroundColor;
+            Console.ForegroundColor = originalColor;
+            m_OriginalConsoleStream.Write(value);
+        }
+
+        public override Encoding Encoding {
+            get {
+                return Encoding.Default;
+            }
+        }
+
+        public static void SetToConsole() {
+            Console.SetOut(new ConsoleOutWriter(Console.Out));
+        }
+    }
+
+    public class ConsoleErrorWriterDecorator : TextWriter {
+        private TextWriter m_OriginalConsoleStream;
+
+        public ConsoleErrorWriterDecorator(TextWriter consoleTextWriter) {
+            m_OriginalConsoleStream = consoleTextWriter;
+        }
+
+        public override void WriteLine(string value) {
+            ConsoleColor originalColor = Console.ForegroundColor;
+            Console.ForegroundColor = ConsoleColor.Red;
+            m_OriginalConsoleStream.Write("[{0}] {1}", DateTime.Now.ToString(), value);
+            Console.ForegroundColor = originalColor;
+        }
+
+        public override Encoding Encoding {
+            get {
+                return Encoding.Default;
+            }
+        }
+
+        public static void SetToConsole() {
+            Console.SetError(new ConsoleErrorWriterDecorator(Console.Error));
+        }
+    }
+
+    #endregion
+
 }
