@@ -390,14 +390,16 @@ namespace MCMTRS.Protocal578 {
                     delta--;
                 }
                 if(running && listener.Pending()) {
-                    ThreadPool.QueueUserWorkItem((object state) => {
+                    Thread thread = new Thread((object state) => {
                         TcpClient clt = listener.AcceptTcpClient();
                         Client client = new Client();
                         int clientID = client.clientID;
                         Pool.Instance.clients.Add(client);
                         client.Start(clt);
+                        client.Dispose();
                         Pool.Instance.clients.RemoveAt(Pool.Instance.clients.FindIndex(c => c.clientID == clientID));
                     });
+                    thread.Start();
                 }
             }
 
@@ -538,6 +540,7 @@ namespace MCMTRS.Protocal578 {
                     ;
                 HandlePacket(net);
             }
+            Console.WriteLine("Closed");
         }
 
         public void Dispose() {
@@ -547,6 +550,8 @@ namespace MCMTRS.Protocal578 {
             net.Dispose();
             user.Close();
             user.Dispose();
+            if(player.HasValue)
+                Pool.Instance.players.Remove(player.Value.ID);
             Console.WriteLine("Connection with {0} has been lost", username);
         }
 
@@ -575,7 +580,9 @@ namespace MCMTRS.Protocal578 {
 
         public void HandlePacket(NetworkStream net) {
             UCPacket packet;
-            try { 
+            try {
+                if(!net.DataAvailable)
+                    return;
                 packet = new UCPacket(net);
                 if(stdout && !dontLogIN.Contains(packet.pktID.Item1))
                     Console.WriteLine("Recieved Packet: Length: {0}, ID: {1}, Data: {2}", packet.length,
