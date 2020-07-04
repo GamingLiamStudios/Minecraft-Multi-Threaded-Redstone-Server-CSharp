@@ -2,6 +2,7 @@
 using fNbt.Tags;
 using System;
 using System.Collections.Generic;
+using System.ComponentModel.Design;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -401,6 +402,8 @@ namespace MCMTRS.Protocal578 {
         public List<Client> clients;
         public JsonElement properties;
         public Queue<UCPacket> broadcast;
+        public int tps;
+        public bool closeNextTick;
 
         public static Pool Instance {
             get {
@@ -420,7 +423,6 @@ namespace MCMTRS.Protocal578 {
         TcpListener listener;
         bool running;
         string propertiesPath;
-        bool closeNextTick;
 
         public Server(string[] args) {
             //Server Init
@@ -437,7 +439,7 @@ namespace MCMTRS.Protocal578 {
                 .GetInt32());
             Pool.Instance.seedHash = SHA256.Create().ComputeHash(BitConverter.GetBytes(Pool.Instance.properties.GetProperty("level-seed")
                 .GetInt64()));
-            closeNextTick = false;
+            Pool.Instance.closeNextTick = false;
 
             //Listen For Clients
             Console.WriteLine("Server Started");
@@ -447,13 +449,15 @@ namespace MCMTRS.Protocal578 {
             double ammountOfTicks = 20.0;
             double ns = 1000000000.0 / ammountOfTicks;
             double delta = 0;
+            int tickCount = 0;
+            long timer = time.ElapsedMilliseconds;
             while(running) {
                 long now = time.ElapsedTicks * nspt;
                 delta += (now - lastTime) / ns;
                 lastTime = now;
                 while(delta >= 1) {
                     try {
-                        if(closeNextTick) {
+                        if(Pool.Instance.closeNextTick) {
                             foreach(Client c in Pool.Instance.clients)
                                 if(c.canTick)
                                     c.Tick();
@@ -467,6 +471,12 @@ namespace MCMTRS.Protocal578 {
                         }
                     } catch(Exception) { }
                     delta--;
+                    tickCount++;
+                }
+                if(time.ElapsedMilliseconds - timer >= 1000) {
+                    Pool.Instance.tps = tickCount;
+                    tickCount = 0;
+                    timer = time.ElapsedMilliseconds;
                 }
                 if(running && listener.Pending()) {
                     Thread thread = new Thread((object state) => {
@@ -487,7 +497,7 @@ namespace MCMTRS.Protocal578 {
             listener.Stop();
         }
 
-        public void CloseAll() {
+        public static void CloseAll() {
             var stream = new MemoryStream();
             using(var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true })) {
                 writer.WriteStartObject();
@@ -495,6 +505,7 @@ namespace MCMTRS.Protocal578 {
                 writer.WriteEndObject();
             }
             Pool.Instance.broadcast.Enqueue(new UCPacket(0x1B, stream.ToArray()));
+            Pool.Instance.closeNextTick = true;
         }
 
         #region Properties
@@ -662,12 +673,17 @@ namespace MCMTRS.Protocal578 {
                         Pool.Instance.players.Contains(e.ID)).Cast<Player>().ToArray()));
                 PlayKeepAliveClient(net);
             }
-            Pool.Instance.broadcast.ToList().ForEach(packet => {
-                WritePacket(net, packet);
-                if(packet.pktID.Item1 == 0x1B)
-                    Close();
-            });
+            Pool.Instance.broadcast.ToList().ForEach(packet => HandleBroadcastPacket(net, packet));
             tickCount++;
+        }
+
+        private void HandleBroadcastPacket(NetworkStream net, UCPacket packet) {
+            WritePacket(net, packet);
+            switch(packet.pktID.Item1) {
+                case 0x1B:
+                    Close();
+                    break;
+            }
         }
 
         public void HandlePacket(NetworkStream net) {
@@ -679,7 +695,7 @@ namespace MCMTRS.Protocal578 {
                 if(stdout && !dontLogIN.Contains(packet.pktID.Item1))
                     Console.WriteLine("Recieved Packet: Length: {0}, ID: {1}, Data: {2}", packet.length,
                         new BigInteger(packet.pktID.Item1).ToString("x").PadLeft(2, '0'), new BigInteger(packet.data).ToString("x") + " | "
-                        + Encoding.UTF8.GetString(packet.data));
+                        + Encoding.UTF8.GetString(packet.data).Trim());
                 if(player.HasValue) {
                     latency.Stop();
                     player.Value.SetPing((int)latency.ElapsedMilliseconds); 
@@ -1146,11 +1162,28 @@ namespace MCMTRS.Protocal578 {
 
         private void PlayChatMessageServ(NetworkStream net, UCPacket packet) {
             string text = Encoding.UTF8.GetString(packet.reader.ReadBytes(VariableNumbers.ReadVarInt(packet.reader).Item1));
+            bool broadcast = false;
             var stream = new MemoryStream();
             using(var writer = new Utf8JsonWriter(stream)) {
                 writer.WriteStartObject();
                 if(text.StartsWith('/')) {
                     //Command Handling
+                    switch(text.Substring(1)) {
+                        case "help":
+                            writer.WriteString("text", "Go ask GLS for help");
+                            break;
+                        case "tps":
+                            writer.WriteString("text", "TPS: " + Pool.Instance.tps);
+                            break;
+                        case "stop":
+                            writer.WriteString("text", "Out Of Order");
+                            //Server.CloseAll();
+                            break;
+                        default:
+                            writer.WriteString("color", "dark_red");
+                            writer.WriteString("text", "Command Doesn't Exist");
+                            break;
+                    }
                 } else {
                     writer.WriteString("translate", "chat.type.text");
                     writer.WriteStartArray("with");
@@ -1158,11 +1191,11 @@ namespace MCMTRS.Protocal578 {
                     writer.WriteString("text", username);
                     writer.WriteStartObject("clickEvent");
                     writer.WriteString("action", "suggest_command");
-                    writer.WriteString("value", "/msg " + username+" ");
+                    writer.WriteString("value", "/msg " + username + " ");
                     writer.WriteEndObject();
                     writer.WriteStartObject("clickEvent");
                     writer.WriteString("action", "show_entity");
-                    writer.WriteString("value", "{id:"+uuid+",name:"+username+"}");
+                    writer.WriteString("value", "{id:" + uuid + ",name:" + username + "}");
                     writer.WriteEndObject();
                     writer.WriteString("insertion", username);
                     writer.WriteEndObject();
@@ -1171,6 +1204,7 @@ namespace MCMTRS.Protocal578 {
                     writer.WriteEndObject();
                     writer.WriteEndArray();
                 }
+
                 writer.WriteEndObject();
             }
             byte[] temp = stream.ToArray();
@@ -1178,7 +1212,10 @@ namespace MCMTRS.Protocal578 {
             stream.Write(VariableNumbers.CreateVarInt(temp.Length));
             stream.Write(temp);
             stream.Write(VariableNumbers.CreateVarInt(text.StartsWith('/') ? 1 : 0));
-            Pool.Instance.broadcast.Enqueue(new UCPacket(0x0F, stream.ToArray()));
+            if(broadcast)
+                Pool.Instance.broadcast.Enqueue(new UCPacket(0x0F, stream.ToArray()));
+            else
+                WritePacket(net, new UCPacket(0x0F, stream.ToArray()));
         }
 
         private void PlayClientSettings(NetworkStream net, UCPacket packet) {
