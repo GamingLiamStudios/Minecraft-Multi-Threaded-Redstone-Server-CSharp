@@ -1,6 +1,6 @@
 # Minecraft-Multi-Threaded-Redstone-Server-CSharp
 
-Inspired from MCHPRS https://github.com/StackDoubleFlow/MCHPRS
+Inspired by MCHPRS https://github.com/StackDoubleFlow/MCHPRS
 
 Master Branch contains latest working Protocal Release.
 
