@@ -402,7 +402,7 @@ namespace MCMTRS.Protocal578 {
         public List<Client> clients;
         public JsonElement properties;
         public Queue<UCPacket> broadcast;
-        public int tps;
+        public Stack<ushort> tpsHistory;
         public bool closeNextTick;
 
         public static Pool Instance {
@@ -450,11 +450,13 @@ namespace MCMTRS.Protocal578 {
             double ns = 1000000000.0 / ammountOfTicks;
             double delta = 0;
             int tickCount = 0;
+            int ltc = 0;
             long timer = time.ElapsedMilliseconds;
             while(running) {
                 long now = time.ElapsedTicks * nspt;
                 delta += (now - lastTime) / ns;
                 lastTime = now;
+                ltc = tickCount;
                 while(delta >= 1) {
                     try {
                         if(Pool.Instance.closeNextTick) {
@@ -473,10 +475,12 @@ namespace MCMTRS.Protocal578 {
                     delta--;
                     tickCount++;
                 }
+                if(ltc + 1 < tickCount)
+                    Console.WriteLine("Server Could not keep up! Was behind by {0} ticks", tickCount - ltc + 1);
                 if(time.ElapsedMilliseconds - timer >= 1000) {
                     Pool.Instance.tps = tickCount;
                     tickCount = 0;
-                    timer = time.ElapsedMilliseconds;
+                    timer += 1000;
                 }
                 if(running && listener.Pending()) {
                     Thread thread = new Thread((object state) => {
