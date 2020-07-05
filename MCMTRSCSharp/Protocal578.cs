@@ -2,19 +2,20 @@
 using fNbt.Tags;
 using System;
 using System.Collections.Generic;
-using System.ComponentModel.Design;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Numerics;
-using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics.X86;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Runtime.Intrinsics;
 
 namespace MCMTRS.Protocal578 {
 
@@ -402,7 +403,7 @@ namespace MCMTRS.Protocal578 {
         public List<Client> clients;
         public JsonElement properties;
         public Queue<UCPacket> broadcast;
-        public Stack<ushort> tpsHistory;
+        public short[] tpsHistory;
         public bool closeNextTick;
 
         public static Pool Instance {
@@ -416,6 +417,7 @@ namespace MCMTRS.Protocal578 {
             players = new List<int>();
             entities = new List<IEntity>();
             broadcast = new Queue<UCPacket>();
+            tpsHistory = new short[60 * 15];
         }
     }
 
@@ -475,10 +477,13 @@ namespace MCMTRS.Protocal578 {
                     delta--;
                     tickCount++;
                 }
-                if(ltc + 1 < tickCount)
-                    Console.WriteLine("Server Could not keep up! Was behind by {0} ticks", tickCount - ltc + 1);
+                ltc++;
+                if(ltc < tickCount)
+                    Console.WriteLine("Server Could not keep up! Was behind by {0} ticks", tickCount - ltc);
                 if(time.ElapsedMilliseconds - timer >= 1000) {
-                    Pool.Instance.tps = tickCount;
+                    IntPtr tpsPtr = Marshal.UnsafeAddrOfPinnedArrayElement(Pool.Instance.tpsHistory, 0);
+                    Marshal.Copy(tpsPtr, Pool.Instance.tpsHistory, 1, Pool.Instance.tpsHistory.Length - 1);
+                    Pool.Instance.tpsHistory[0] = (short)tickCount;
                     tickCount = 0;
                     timer += 1000;
                 }
@@ -1177,7 +1182,10 @@ namespace MCMTRS.Protocal578 {
                             writer.WriteString("text", "Go ask GLS for help");
                             break;
                         case "tps":
-                            writer.WriteString("text", "TPS: " + Pool.Instance.tps);
+                            Vector256<ushort> tps16 = Vector256.Create((ushort)0);
+                            IntPtr tpsPtr = Marshal.UnsafeAddrOfPinnedArrayElement(Pool.Instance.tpsHistory, 0);
+                            for(int i = 0; i < Pool.Instance.tpsHistory.Length; i += 16)
+                                tps16 = Avx2.Add(tps16, Marshal.PtrToStructure<Vector256<ushort>>(tpsPtr + i));
                             break;
                         case "stop":
                             writer.WriteString("text", "Out Of Order");
