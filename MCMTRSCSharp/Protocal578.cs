@@ -16,6 +16,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Runtime.Intrinsics;
+using Ionic.Zlib;
 
 namespace MCMTRS.Protocal578 {
 
@@ -117,39 +118,75 @@ namespace MCMTRS.Protocal578 {
 	}
 
 	struct UCPacket {
-		public int length;
 		public Tuple<int, byte> pktID;
 		public byte[] data;
 		public BinaryReader reader;
-		public UCPacket(NetworkStream net) {
-			length = VariableNumbers.ReadVarInt(net).Item1;
+		public UCPacket(NetworkStream net, bool compressed) {
+			int length = VariableNumbers.ReadVarInt(net).Item1;
 			if(length == -1)
-				throw new EndOfStreamException("Unable to Load VarInt");
+				throw new EndOfStreamException("Unable to read Packet Length");
+			if(compressed) {
+				var ulength = VariableNumbers.ReadVarInt(net);
+				if(ulength.Item2 == 0)
+					throw new EndOfStreamException("Unable to read Packet Length");
+				if(ulength.Item1 != 0) {
+					data = new byte[length - ulength.Item2];
+					if(net.Read(data, 0, data.Length) != data.Length)
+						throw new EndOfStreamException("Unable to read Packet Data");
+					var stream = new MemoryStream();
+					using(var compressedStream = new MemoryStream(data))
+					using(var inputStream = new ZlibStream(compressedStream, CompressionMode.Decompress)) {
+						inputStream.CopyTo(stream);
+						stream.Position = 0;
+					}
+					pktID = VariableNumbers.ReadVarInt(new BinaryReader(stream));
+					if(pktID.Item2 == 0)
+						throw new EndOfStreamException("Unable to read Packet ID");
+					data = new byte[ulength.Item1 - pktID.Item2];
+					if(data.Length != 0)
+						if(stream.Read(data, 0, data.Length) != data.Length)
+							throw new EndOfStreamException("Unable to read Packet Data");
+					reader = new BinaryReader(new MemoryStream(data));
+					return;
+				} else
+					length -= ulength.Item2;
+			}
 			pktID = VariableNumbers.ReadVarInt(net);
 			if(pktID.Item2 == 0)
-				throw new EndOfStreamException("Unable to Load VarInt");
+				throw new EndOfStreamException("Unable to read Packet ID");
 			data = new byte[length - pktID.Item2];
-			if(data.Length != 0) {
+			if(data.Length != 0)
 				if(net.Read(data, 0, data.Length) != data.Length)
-					throw new EndOfStreamException("Unable to Load VarInt");
-			}
+					throw new EndOfStreamException("Unable to read Packet Data");
 			reader = new BinaryReader(new MemoryStream(data));
 		}
 		public UCPacket(int _pktID, byte[] _data) {
 			data = _data;
 			pktID = new Tuple<int, byte>(_pktID, 0);
-			length = 0;
 			reader = new BinaryReader(new MemoryStream(data));
 		}
-		public byte[] WritePacket() {
+		public byte[] WritePacket(bool compressed) {
 			var stream = new MemoryStream();
 			byte[] id = VariableNumbers.CreateVarInt(pktID.Item1);
 			stream.Write(id);
 			stream.Write(data);
 			byte[] pktData = stream.ToArray();
 			stream.SetLength(0);
-			stream.Write(VariableNumbers.CreateVarInt(pktData.Length));
-			stream.Write(pktData);
+			if(compressed) {
+				using(var compressedStream = new MemoryStream(pktData))
+				using(var inputStream = new ZlibStream(compressedStream, CompressionMode.Compress, CompressionLevel.BestCompression)) {
+					inputStream.CopyTo(stream);
+					stream.Position = 0;
+				}
+				var compressedData = stream.ToArray();
+				var dataLength = VariableNumbers.CreateVarInt(pktData.Length);
+				stream.Write(VariableNumbers.CreateVarInt(compressedData.Length + dataLength.Length));
+				stream.Write(dataLength);
+				stream.Write(compressedData);
+			} else {
+				stream.Write(VariableNumbers.CreateVarInt(pktData.Length));
+				stream.Write(pktData);
+			}
 			return stream.ToArray();
 		}
 	}
@@ -699,14 +736,14 @@ namespace MCMTRS.Protocal578 {
 			}
 		}
 
-		public void HandlePacket(NetworkStream net) {
+		private void HandlePacket(NetworkStream net) {
 			UCPacket packet;
 			try {
 				if(!net.DataAvailable)
 					return;
-				packet = new UCPacket(net);
+				packet = new UCPacket(net, compression);
 				if(stdout && !dontLogIN.Contains(packet.pktID.Item1))
-					Console.WriteLine("Recieved Packet: Length: {0}, ID: {1}, Data: {2}", packet.length,
+					Console.WriteLine("Recieved Packet: Length: {0}, ID: {1}, Data: {2}", packet.data.Length + packet.pktID.Item2,
 						new BigInteger(packet.pktID.Item1).ToString("x").PadLeft(2, '0'), new BigInteger(packet.data).ToString("x") + " | "
 						+ Encoding.UTF8.GetString(packet.data).Trim());
 				if(player.HasValue) {
@@ -875,6 +912,7 @@ namespace MCMTRS.Protocal578 {
 		}
 
 		private void LoginLoginSuccess(NetworkStream net) {
+			LoginSetCompression(net);
 			MemoryStream stream = new MemoryStream();
 			byte[] uuidBytes = Encoding.UTF8.GetBytes(uuid);
 			stream.Write(VariableNumbers.CreateVarInt(uuidBytes.Length));
@@ -889,6 +927,11 @@ namespace MCMTRS.Protocal578 {
 			player = new Player(GetNextEntityID(), new Vector3d(0, 0, 0), new Vector2(0, 0), uuid);
 			Pool.Instance.players.Add(player.Value.ID);
 			PlayStart(net);
+		}
+
+		private void LoginSetCompression(NetworkStream net) {
+			WritePacket(net, new UCPacket(0x03, VariableNumbers.CreateVarInt(1)));
+			compression = true;
 		}
 
 		#endregion
@@ -1249,7 +1292,7 @@ namespace MCMTRS.Protocal578 {
 				writer.WriteEndObject();
 			}
 			byte[] temp = stream.ToArray();
-			stream = new MemoryStream();
+			stream.SetLength(0);
 			stream.Write(VariableNumbers.CreateVarInt(temp.Length));
 			stream.Write(temp);
 			stream.Write(VariableNumbers.CreateVarInt(text.StartsWith('/') ? 1 : 0));
@@ -1331,7 +1374,7 @@ namespace MCMTRS.Protocal578 {
 		public void WritePacket(NetworkStream net, UCPacket packet) {
 			if(stdout && !dontLogOUT.Contains(packet.pktID.Item1))
 				Console.WriteLine("Sending Packet With ID: " + new BigInteger(packet.pktID.Item1).ToString("x").PadLeft(2, '0'));
-			byte[] packetData = packet.WritePacket();
+			byte[] packetData = packet.WritePacket(compression);
 			try {
 				if(encrypted)
 					net.Write(Encrypt(packetData));
