@@ -443,6 +443,7 @@ namespace MCMTRS.Protocal578 {
 		public int[] tpsHistory;
 		public bool closeNextTick;
 		public int tps;
+		public NbtFile levelDat;
 
 		public static Pool Instance {
 			get {
@@ -463,6 +464,7 @@ namespace MCMTRS.Protocal578 {
 		TcpListener listener;
 		bool running;
 		string propertiesPath;
+		string worldFilesPath;
 
 		public Server(string[] args) {
 			//Server Init
@@ -472,14 +474,17 @@ namespace MCMTRS.Protocal578 {
 			running = true;
 			long nspt = 1000000000 / Stopwatch.Frequency;
 			propertiesPath = Directory.GetCurrentDirectory() + "\\server.properties";
-			if(!File.Exists(propertiesPath))
+			if(!File.Exists(propertiesPath)) //If Server Properties File not exist, Generate one
 				CreatePropertiesFile(propertiesPath);
-			ReadPropertiesFile(propertiesPath);
+			ReadPropertiesFile(propertiesPath); //Read Server Properties File
+			worldFilesPath = Directory.GetCurrentDirectory() + "\\" + Pool.Instance.properties.GetProperty("level-name").GetString();
+			if(!File.Exists(worldFilesPath) || !File.Exists(worldFilesPath + "\\level.dat")) //If World Files not exist, Generate them
+				CreateWorldFiles(); 
+			Pool.Instance.levelDat = new NbtFile(worldFilesPath + "\\level.dat"); //Read level.dat
 			var ip = Pool.Instance.properties.GetProperty("server-ip").GetString();
-			listener = new TcpListener(ip != "" ? IPAddress.Parse(ip) : IPAddress.Any, Pool.Instance.properties.GetProperty("server-port")
-				.GetInt32());
-			Pool.Instance.seedHash = SHA256.Create().ComputeHash(BitConverter.GetBytes(Pool.Instance.properties.GetProperty("level-seed")
-				.GetInt64()));
+			listener = new TcpListener(ip != "" ? IPAddress.Parse(ip) : IPAddress.Any, Pool.Instance.properties.GetProperty("server-port").GetInt32());
+			Pool.Instance.seedHash = SHA256.Create().ComputeHash(BitConverter.GetBytes(Pool.Instance.levelDat.RootTag.Get<NbtCompound>("Data")
+				.Get("RandomSeed").LongValue));
 			Pool.Instance.closeNextTick = false;
 
 			//Networking Thread. Handles the Login Process for incoming connections
@@ -613,7 +618,9 @@ namespace MCMTRS.Protocal578 {
 
 		#region World
 
-
+		private void CreateWorldFiles() {
+			//TODO
+		}
 
 		#endregion
 	}
@@ -1027,7 +1034,7 @@ namespace MCMTRS.Protocal578 {
 			player.Value.SetPing(-1);
 			PlayJoinGame(net);
 			PlayPluginMessageClient(net, "minecraft:brand");
-			uuid = GetRealUUID(username);
+			uuid = GetRealUUID(username).Insert(8, "-").Insert(13, "-").Insert(18, "-").Insert(23, "-");
 			JsonElement json = GetJsonFromURL(net, "https://sessionserver.mojang.com/session/minecraft/profile/" + uuid.Replace("-", ""), false)
 				.GetProperty("properties").EnumerateArray().First();
 			player.Value.SetProperties(new Player.Property[] { new Player.Property(json.GetProperty("name").GetString(), json.GetProperty("value").GetString()) });
@@ -1162,8 +1169,8 @@ namespace MCMTRS.Protocal578 {
 
 		private void PlayUpdateViewPosition(NetworkStream net) {
 			var stream = new MemoryStream();
-			stream.Write(VariableNumbers.CreateVarInt((int)(player.Value.X / 16)));
-			stream.Write(VariableNumbers.CreateVarInt((int)(player.Value.Z / 16)));
+			stream.Write(VariableNumbers.CreateVarInt((int)Math.Floor(player.Value.X / 16)));
+			stream.Write(VariableNumbers.CreateVarInt((int)Math.Floor(player.Value.Z / 16)));
 			WritePacket(net, new UCPacket(0x41, stream.ToArray()));
 		}
 
