@@ -488,12 +488,12 @@ namespace MCMTRS.Protocal578 {
 			Pool.Instance.closeNextTick = false;
 
 			//Networking Thread. Handles the Login Process for incoming connections
+			//While the server is running, Accept all Incoming Connections and Begin Login Process
 			listener.Start();
 			Thread networking = new Thread((object state) => { 
 				while(running) {
 					TcpClient clt = listener.AcceptTcpClient();
 					Client client = new Client();
-					int clientID = client.clientID;
 					Pool.Instance.clients.Add(client);
 					client.Start(clt);
 				}
@@ -501,10 +501,10 @@ namespace MCMTRS.Protocal578 {
 			networking.Start();
 
 			//Main Thread. Handles Ticking for Players. To be multithreaded.
+			//Initalize all values for ticking
 			Pool.Instance.tps = 20;
-			double ammountOfTicks = 20.0;
-			for(int i = 0; i < Pool.Instance.tpsHistory.Length; i++)
-				Pool.Instance.tpsHistory[i] = Pool.Instance.tps;
+			double ammountOfTicks = (double)Pool.Instance.tps;
+			Pool.Instance.tpsHistory.AsSpan().Fill(Pool.Instance.tps);
 			double ns = 1000000000.0 / ammountOfTicks;
 			double delta = 0;
 			int tickCount = 0;
@@ -513,11 +513,13 @@ namespace MCMTRS.Protocal578 {
 			time.Restart();
 			long timer = time.ElapsedMilliseconds;
 			long lastTime = time.ElapsedTicks * nspt;
+			//While the server is running, Tick all Connected Players & handle current tps
 			while(running) {
 				long now = time.ElapsedTicks * nspt;
 				delta += (now - lastTime) / ns;
 				lastTime = now;
 				ltc = tickCount;
+				//Tick all Connected Players & do skipped ticks
 				while(delta >= 1) {
 					if(Pool.Instance.closeNextTick)
 						running = false;
@@ -531,13 +533,15 @@ namespace MCMTRS.Protocal578 {
 					delta--;
 					tickCount++;
 				}
+				//Alert console if ticks were skipped
 				ltc++;
 				if(ltc < tickCount)
 					Console.WriteLine("Server Could not keep up! Was behind by {0} ticks", tickCount - ltc);
+				//Store TPS
 				if(time.ElapsedMilliseconds - timer >= 1000) {
 					IntPtr tpsPtr = Marshal.UnsafeAddrOfPinnedArrayElement(Pool.Instance.tpsHistory, 0);
 					Marshal.Copy(tpsPtr, Pool.Instance.tpsHistory, 1, Pool.Instance.tpsHistory.Length - 1);
-					Pool.Instance.tpsHistory[0] = (short)tickCount;
+					Pool.Instance.tpsHistory[0] = (ushort)tickCount;
 					tickCount = 0;
 					timer += 1000;
 				}
