@@ -2,9 +2,15 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
-using System.Threading.Tasks;
+using System.Threading;
 
-namespace MCMTRSCSharp {
-    class Protocol578 {
+namespace MCMTRS.Protocol578 {
+
+    #region DataTypes
+
+    class VariableNumbers {
+
     }
+
+    #endregion
 }

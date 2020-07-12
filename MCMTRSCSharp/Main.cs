@@ -1,5 +1,5 @@
 ﻿//Example Class
-using MCMTRS.Protocal578;
+using MCMTRS.Protocol578;
 
 namespace Testing {
     class Program {
